@@ -88,6 +88,13 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.45), value: activeSplash)
+        .overlay {
+            if store.feedStuck && selectedTab == .home {
+                FeedErrorView(retry: { store.retryFavoritesFeed() })
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.3), value: store.feedStuck)
     }
 
     private enum SplashKind: Equatable { case launch, resave }
@@ -171,6 +178,41 @@ struct ContentView: View {
             .ignoresSafeArea(edges: reduceTransparency ? [] : .bottom)
             .background(bridge.pageBackground.ignoresSafeArea())
             .toolbarVisibility(isTabBarVisible ? .visible : .hidden, for: .tabBar)
+    }
+}
+
+/// Shown when the favorites feed is confirmed stuck (splice landed but Instagram
+/// never rendered) even after an automatic recovery — so the user gets a clean
+/// retry instead of a permanent spinner. No algorithmic content is shown.
+private struct FeedErrorView: View {
+    let retry: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 16) {
+                Image(systemName: "star.slash")
+                    .font(.system(size: 44, weight: .regular))
+                    .foregroundStyle(Color.white.opacity(0.7))
+                Text("Couldn't load your favorites")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                Text("Instagram may have changed something. Try again in a moment.")
+                    .font(.subheadline)
+                    .foregroundStyle(Color.white.opacity(0.55))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+                Button(action: retry) {
+                    Text("Retry")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 28)
+                        .padding(.vertical, 10)
+                        .background(Color.white.opacity(0.14), in: Capsule())
+                }
+                .padding(.top, 4)
+            }
+        }
     }
 }
 

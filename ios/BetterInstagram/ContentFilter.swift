@@ -1317,6 +1317,43 @@ enum ContentFilter {
         }
       }
 
+      // ---- feed fail-safe watchdog -----------------------------------------
+      // The one unrecoverable failure: the splice succeeds but IG's Relay hangs,
+      // leaving a permanent spinner. Detect it and let native recover, so we
+      // never brick on an eternal spinner. Conservative: only "stuck" if NO
+      // favorite has rendered AND a loading spinner is still present, and only
+      // armed once favorite edges have actually been delivered (so we never fire
+      // during the normal waiting-for-edges spinner).
+
+      function feedLooksStuck() {
+        if (location.pathname !== '/') return false;
+        const articles = scanRoot().querySelectorAll('article');
+        for (let i = 0; i < articles.length; i++) {
+          const a = articles[i];
+          if (a.classList.contains('__bi_hidden') || a.classList.contains('__bi_fav_hidden')) continue;
+          const author = articleAuthor(a);
+          if (author && (favSet.has(author) || favAuthors.has(author))) return false;
+        }
+        // No favorite rendered — only "stuck" if a loading spinner is present.
+        return !!document.querySelector('[role="progressbar"], [aria-label="Loading..."], svg[aria-label="Loading..."]');
+      }
+
+      function armFeedWatchdog() {
+        if (!isTopFrame || window.__biWatchArmed) return;
+        if (location.pathname !== '/' || !favoritesOn) return;
+        if (!favEdges || !favEdges.length) return;
+        window.__biWatchArmed = true;
+        setTimeout(function() {
+          try {
+            if (!feedLooksStuck()) return;
+            biLog('[watchdog] favorites feed stuck (no favorites rendered, spinner present)');
+            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.biFeedStuck) {
+              window.webkit.messageHandlers.biFeedStuck.postMessage(true);
+            }
+          } catch (e) {}
+        }, 9000);
+      }
+
       function isOpaqueColor(bg) {
         if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') return false;
         if (bg.indexOf('rgba(') === 0) {
@@ -1446,6 +1483,7 @@ enum ContentFilter {
           reportAvatar();
           reportProfile();
           reportFeedHealth();
+          armFeedWatchdog();
           reportBackgroundColor();
         } catch (e) {
           biLog('[error] apply failed: ' + (e && e.message ? e.message : e));

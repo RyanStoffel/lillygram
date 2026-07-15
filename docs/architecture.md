@@ -80,7 +80,8 @@ handled in `WebViewStore.userContentController(_:didReceive:)`:
 | `biBg` | CSS color → `bridge.pageBackground` (e.g. black on `/stories/`). |
 | `biScroll` | Bool → enable/disable the webview's scroll (reel lock). |
 | `biFavEdit` | → open the favorites editor sheet. |
-| `biFavReady` | → favorites feed rendered; drop the launch splash. |
+| `biFavReady` | → favorites feed rendered; drop the launch splash; clear feed-stuck state. |
+| `biFeedStuck` | → watchdog: splice landed but feed never rendered. Native does one auto-recovery reload, then shows the retry screen (`FeedErrorView`). |
 | `biLog` | String → `[BI-DEBUG]` logging channel. |
 
 **Native → web** via `evaluateJavaScript` / `callAsyncJavaScript`:

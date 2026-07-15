@@ -21,7 +21,7 @@ layer, blocking approach, or favorites pipeline changes materially._
 | Reels blocking | **ALIGNED** | Low |
 | DM sent-reel exception | **PARTIAL** | Medium (heuristic) |
 | Account-only search | **MISALIGNED** | High (requirement unmet) |
-| Resilience to IG DOM/API change | **MISALIGNED** | High (systemic) |
+| Resilience to IG DOM/API change | **PARTIAL** | High (systemic); feed now fails safe (watchdog + retry) instead of a permanent spinner |
 | Performance: warm-up / launch / flash | **PARTIAL** | Medium (UX) |
 | Media / thumbnail quality | **ALIGNED** | Low |
 | Session / auth | **ALIGNED** | Low |
@@ -139,8 +139,18 @@ iOS 26) — see [known-issues.md](known-issues.md).
   **detect failure** (assert expected shape; log a miss).
 - **Impact:** high — this is what turns an IG update into a broken app and what
   produced the current regression class.
-- **Worth it?** **Yes — highest-value change.** Add invariant guards + safe
-  fallbacks; prefer structural matches over exact `doc_id`s. Medium effort.
+- **Done (2026-07-14):** the load-bearing fail-safe is in. A **JS watchdog**
+  (`armFeedWatchdog`/`feedLooksStuck` in `ContentFilter.swift`) detects the
+  unrecoverable case — splice landed but Relay never rendered (no favorite
+  article + a loading spinner present, checked only after edges were delivered)
+  — and posts `biFeedStuck`. Native (`WebViewStore.handleFeedStuck`) does one
+  automatic recovery (re-harvest + reload); if still stuck it surfaces a native
+  **retry screen** (`FeedErrorView`) instead of a permanent spinner. No reload
+  loops (1-attempt budget), no algorithmic leak (R1 preserved). Feed hooks
+  already prefer structural `feed__timeline` matches over exact `doc_id`s;
+  `sanitizeFavEdges` degrades bad edges to the native feed rather than hanging.
+- **Still open:** the favorites-sync `doc_id`s are exact (rotate ~weeks); the
+  `confirmed=0` check flags it but there's no auto-recapture.
 
 ### 8. Performance: warm-up / launch / white flash — PARTIAL
 - **Now:** persistent webviews (good) + `isOpaque=false` + `backgroundColor`

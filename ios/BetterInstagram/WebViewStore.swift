@@ -6,6 +6,10 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     /// True once the home tab has actually rendered the favorites feed. Drives
     /// the launch splash that hides the cold-start harvest + reload.
     @Published private(set) var favoritesFeedReady = false
+    /// True when the favorites feed is confirmed stuck (splice landed but the
+    /// feed never rendered) even after an automatic recovery reload — drives a
+    /// native retry screen so the user never faces a permanent spinner.
+    @Published private(set) var feedStuck = false
 
     private var webViews: [NavTarget: WKWebView] = [:]
     private var navVisibleCache: [ObjectIdentifier: Bool] = [:]
@@ -23,6 +27,7 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     private var cachedFavEdgesJSON: String?
     private var didReloadHomeForFavorites = false
     private var didRunLaunchSync = false
+    private var feedRecoveryAttempts = 0
     private let blockedExactPaths: Set<String> = ["/reels", "/reels/", "/explore", "/explore/"]
 
     private let startURLs: [NavTarget: String] = [
@@ -56,6 +61,7 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         userContentController.add(self, name: "biScroll")
         userContentController.add(self, name: "biFavEdit")
         userContentController.add(self, name: "biFavReady")
+        userContentController.add(self, name: "biFeedStuck")
         userContentController.add(self, name: "biLog")
 
         let dataStore = WKWebsiteDataStore.default()
@@ -160,6 +166,8 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             cachedFavEdgesJSON = nil
             didReloadHomeForFavorites = false
             favoritesFeedReady = false
+            feedStuck = false
+            feedRecoveryAttempts = 0
             harvestFavorites()
             if let url = URL(string: homeURLString) {
                 webViews[.home]?.load(URLRequest(url: url))
@@ -499,6 +507,40 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         }
     }
 
+    // MARK: - Feed fail-safe recovery
+
+    /// The JS watchdog reported the favorites feed stuck (splice landed but the
+    /// feed never rendered). Try one automatic recovery reload; if it's still
+    /// stuck after that, surface the retry screen rather than loop.
+    @MainActor
+    private func handleFeedStuck() {
+        guard !feedStuck else { return }
+        if feedRecoveryAttempts == 0 {
+            feedRecoveryAttempts = 1
+            print("[BI-watchdog] favorites feed stuck — auto-recovery (re-harvest + reload)")
+            reharvestAndReloadHome()
+        } else {
+            print("[BI-watchdog] favorites feed still stuck after recovery — showing retry")
+            feedStuck = true
+        }
+    }
+
+    /// User-triggered retry from the feed error screen.
+    func retryFavoritesFeed() {
+        feedStuck = false
+        feedRecoveryAttempts = 0
+        reharvestAndReloadHome()
+    }
+
+    private func reharvestAndReloadHome() {
+        cachedFavEdgesJSON = nil
+        didReloadHomeForFavorites = false
+        harvestFavorites()
+        if let url = URL(string: homeURLString) {
+            webViews[.home]?.load(URLRequest(url: url))
+        }
+    }
+
     private static func keyWindow() -> UIWindow? {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         return scenes.flatMap { $0.windows }.first { $0.isKeyWindow }
@@ -720,7 +762,13 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         } else if message.name == "biFavReady" {
             DispatchQueue.main.async {
                 self.favoritesFeedReady = true
+                // The feed rendered: clear any stuck state and reset the recovery
+                // budget so a future stuck feed gets a fresh recovery attempt.
+                self.feedStuck = false
+                self.feedRecoveryAttempts = 0
             }
+        } else if message.name == "biFeedStuck" {
+            DispatchQueue.main.async { self.handleFeedStuck() }
         } else if message.name == "biScroll", let locked = message.body as? Bool {
             let source = message.webView
             DispatchQueue.main.async {
