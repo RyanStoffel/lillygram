@@ -50,19 +50,23 @@ cause is understood.
 
 ---
 
-## 2. Favorites feed density ceiling (~3 posts)
+## 2. Favorites feed density ceiling (~2–3 posts)  ⬅ NEXT PRIORITY
 
-**Requirement:** R1 (quality of). **Status:** open; blocked on a safe approach.
+**Requirement:** R1 (quality of). **Status:** OPEN, now unblocked (#1 is fixed
+and rendering on device). Agreed next task: **show more posts from favorites.**
 
-Instagram streams only ~3 posts into the favorites page HTML, and its favorites
+Instagram streams only ~2–3 posts into the favorites page HTML, and its favorites
 pagination reports `has_next_page: false` (a cursor-replay attempt logged
 `replayLoops=0`). So the harvest can't get more from that feed.
 
 **Next step (safe).** Add a **separate data source**: fetch each favorite's own
-recent profile media, filter to a recency window, and **append** to the spliced
-connection — **without reordering** and **without duplicate ids** (the two things
-that caused issue #1). Treat as a distinct, carefully-verified change; do not
-bolt it onto the working path until #1 is confirmed stable.
+recent profile media (`/api/v1/feed/user/<id>/` or `web_profile_info` media
+edges), filter to a recency window, map into the same timeline-edge shape, and
+**append** to the harvested edges. It flows through `sanitizeFavEdges` (which
+already de-dupes by `media.pk||id||code`, drops non-post nodes, and preserves
+order — the invariants that hang Relay), and both splice paths (SSR `JSON.parse`
+and XHR) render whatever edges land there. **Never reorder/sort the final array.**
+Verify against the `[favshape]`/`[edgediff]` diagnostics before shipping.
 
 ---
 
@@ -94,19 +98,27 @@ cached favorites when available; keep the splash as the mask, not the fix.
 
 ---
 
-## 5. App favorites ↔ Instagram favorites coupling (mutates the real list)
+## 5. Sync custom (app) favorites → official Instagram Favorites list  ⬅ NEXT PRIORITY
 
-**Requirement:** R1 (side-effect). **Status:** by design, flagged.
+**Requirement:** R1. **Status:** partial (one-way ADD only). Agreed next task:
+**make the app's custom favorites fully sync to the official Instagram list.**
 
 The feed reflects Instagram's **server-side** Favorites list, so
-`syncFavoritesToInstagram()` **writes the app's picks into the user's real
-Instagram Favorites** (`set_besties`). There is no confirmed endpoint to *read*
-the current list, so the sync only **adds** — pre-existing Instagram favorites
-are not removed and may also appear in the feed.
+`syncFavoritesToInstagram()` writes the app's picks into the user's real
+Instagram Favorites (`POST set_besties` with `add=<ids>`). Today it only **adds**:
+there is no confirmed endpoint to *read* the current server list, so picks the
+user **deselects** are never removed, and pre-existing Instagram favorites the
+user never picked in-app stay on the list and show in the feed.
 
-**Next step.** Find a "list favorites" endpoint (devtools capture) to reconcile
-(remove picks the user deselected); until then, document the side-effect in
-onboarding copy.
+**Next step (make it a true two-way sync).**
+1. Capture a "list current besties/favorites" endpoint from a live session
+   (devtools) so we can read the server list.
+2. Reconcile on `applyFavoritesSelection`: `add` = app picks not on the server
+   list, `remove` = server entries not in app picks (`set_besties` already
+   accepts a `remove` array). Result: the official list == the app's picks
+   exactly.
+3. Until the read endpoint is confirmed, keep the additive sync and document the
+   side-effect (it mutates the real Instagram Favorites list) in onboarding copy.
 
 ---
 
