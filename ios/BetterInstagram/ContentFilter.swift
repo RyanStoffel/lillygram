@@ -1577,6 +1577,95 @@ enum ContentFilter {
     return JSON.stringify({ markers: markers, scanned: scanned, count: edges.length, authors: authors, edges: edges });
     """
 
+    /// Run (via callAsyncJavaScript, args: harvestJson, usernames) in the hidden
+    /// harvest webview after harvestScript. Densifies the ~3 streamed favorites
+    /// edges by fetching each favorite's own recent profile media and APPENDING
+    /// it. Invariants: streamed edges stay first and untouched (never sorted);
+    /// every appended edge is a deep clone of a real harvested edge with only
+    /// its media replaced by the real api/v1 media object (missing keys
+    /// null-filled from the template); de-duped against everything already
+    /// present; clips (reels) and old posts skipped. Any failure returns the
+    /// original harvest JSON unchanged (fail-safe).
+    static let densityScript = """
+    const APP_ID = '936619743392459';
+    const WINDOW_DAYS = 30;
+    const PER_USER = 12;
+    const MAX_TOTAL = 50;
+    let data;
+    try { data = JSON.parse(harvestJson); } catch (e) { return harvestJson; }
+    const edges = data.edges || [];
+    let template = null;
+    for (const e of edges) {
+      if (e && e.node && e.node.media) { template = e; break; }
+    }
+    if (!template) { return harvestJson; }
+    const seen = new Set();
+    const ids = {};
+    edges.forEach(function(e) {
+      try {
+        const m = e.node.media;
+        const id = m.pk || m.id || m.code;
+        if (id != null) seen.add(String(id));
+        const u = m.user;
+        if (u && u.username && (u.pk || u.id)) {
+          ids[String(u.username).toLowerCase()] = String(u.pk || u.id);
+        }
+      } catch (err) {}
+    });
+    for (const name of (usernames || [])) {
+      const key = String(name).toLowerCase();
+      if (ids[key]) continue;
+      try {
+        const r = await fetch('/api/v1/users/web_profile_info/?username=' + encodeURIComponent(key), {
+          credentials: 'include', headers: { 'X-IG-App-ID': APP_ID }
+        });
+        if (!r.ok) continue;
+        const j = await r.json();
+        const id = j && j.data && j.data.user && j.data.user.id;
+        if (id) ids[key] = String(id);
+      } catch (err) {}
+    }
+    const cutoff = (Date.now() / 1000) - WINDOW_DAYS * 86400;
+    const appended = [];
+    const idList = [];
+    for (const k in ids) { if (idList.indexOf(ids[k]) === -1) idList.push(ids[k]); }
+    for (const uid of idList) {
+      if (edges.length + appended.length >= MAX_TOTAL) break;
+      let items = [];
+      try {
+        const r = await fetch('/api/v1/feed/user/' + uid + '/?count=' + PER_USER, {
+          credentials: 'include', headers: { 'X-IG-App-ID': APP_ID }
+        });
+        if (!r.ok) continue;
+        const j = await r.json();
+        items = j.items || [];
+      } catch (err) { continue; }
+      let kept = 0;
+      for (const item of items) {
+        if (!item) continue;
+        if (kept >= PER_USER) break;
+        if ((item.product_type || '') === 'clips') continue;
+        if (item.taken_at && item.taken_at < cutoff) continue;
+        if (!(item.image_versions2 || item.carousel_media || item.video_versions)) continue;
+        const mid = item.pk || item.id || item.code;
+        if (mid == null || seen.has(String(mid))) continue;
+        seen.add(String(mid));
+        const edge = JSON.parse(JSON.stringify(template));
+        const tmedia = edge.node.media;
+        for (const k in tmedia) { if (!(k in item)) item[k] = null; }
+        edge.node.media = item;
+        if ('cursor' in edge) edge.cursor = 'bi-' + String(mid);
+        appended.push(edge);
+        kept++;
+        if (edges.length + appended.length >= MAX_TOTAL) break;
+      }
+    }
+    data.edges = edges.concat(appended);
+    data.count = data.edges.length;
+    data.appended = appended.length;
+    return JSON.stringify(data);
+    """
+
     /// Injected at document-start into the hidden harvest webview. Captures the
     /// favorites feed edges + page_info from every feed XHR into
     /// window.__biHarvestEdges / window.__biHarvestPageInfo, and records the

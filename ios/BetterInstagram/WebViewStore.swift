@@ -276,26 +276,61 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                         print("[BI-harvest] no string returned")
                         return
                     }
-                    self.cachedFavEdgesJSON = json
                     self.logHarvestSummary(json)
-                    self.deliverFavEdges()
-                    // After the first successful harvest, reload home once so the
-                    // now-cached favorites splice lands deterministically (no
-                    // cold-start race).
-                    if self.harvestCount(json) > 0 && !self.didReloadHomeForFavorites {
-                        self.didReloadHomeForFavorites = true
-                        // Re-install user scripts so the preamble now carries the
-                        // harvested edges (window.__biFavEdgesPreload); the reload
-                        // then splices them into the server-streamed feed at
-                        // document start.
-                        self.installUserScripts()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                            self?.webViews[.home]?.reload()
-                        }
-                    }
+                    self.densifyHarvest(json)
                 case .failure(let error):
                     print("[BI-harvest] extract error: \(error.localizedDescription)")
                 }
+            }
+        }
+    }
+
+    /// Append each favorite's recent profile media to the streamed edges (the
+    /// density pass, see ContentFilter.densityScript). Fail-safe: any error or
+    /// empty result falls back to the streamed-only harvest unchanged.
+    private func densifyHarvest(_ json: String) {
+        guard harvestCount(json) > 0, let webView = favHarvestWebView else {
+            finishHarvest(json)
+            return
+        }
+        let usernames = favorites.favorites.map(\.username)
+        webView.callAsyncJavaScript(
+            ContentFilter.densityScript,
+            arguments: ["harvestJson": json, "usernames": usernames],
+            in: nil,
+            in: .page
+        ) { result in
+            switch result {
+            case .success(let value):
+                if let augmented = value as? String, self.harvestCount(augmented) >= self.harvestCount(json) {
+                    print("[BI-density] appended \(self.harvestCount(augmented) - self.harvestCount(json)) profile posts")
+                    self.finishHarvest(augmented)
+                } else {
+                    print("[BI-density] no augmentation; using streamed edges only")
+                    self.finishHarvest(json)
+                }
+            case .failure(let error):
+                print("[BI-density] error: \(error.localizedDescription); using streamed edges only")
+                self.finishHarvest(json)
+            }
+        }
+    }
+
+    private func finishHarvest(_ json: String) {
+        cachedFavEdgesJSON = json
+        deliverFavEdges()
+        // After the first successful harvest, reload home once so the
+        // now-cached favorites splice lands deterministically (no
+        // cold-start race).
+        if harvestCount(json) > 0 && !didReloadHomeForFavorites {
+            didReloadHomeForFavorites = true
+            // Re-install user scripts so the preamble now carries the
+            // harvested edges (window.__biFavEdgesPreload); the reload
+            // then splices them into the server-streamed feed at
+            // document start.
+            installUserScripts()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.webViews[.home]?.reload()
             }
         }
     }

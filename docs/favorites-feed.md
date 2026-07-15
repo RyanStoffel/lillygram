@@ -145,16 +145,24 @@ duplicate/non-post edges from ever reaching the splice.
   Instagram's stories markup loses its JS handlers.
 - **Reorder/dedupe-less pagination merge** — the current regression (spinner).
 
-## Density ceiling
+## Density pass (profile-media append)
 
-The harvest returns only **~3 posts** — everything Instagram streams into the
-favorites page HTML on first load. Its own pagination reports
-`has_next_page: false` for that feed, so scrolling/replaying the favorites
-pagination does not reliably yield more (a cursor-replay attempt logged
-`replayLoops=0`). To show a fuller feed (e.g. a month of every favorite's posts)
-the only viable path is a **different data source** — fetch each favorite's own
-recent profile media and append it — and it must be appended **without ever
-reordering** the connection and **without duplicate ids**. Not yet built.
+The harvest alone returns only **~3 posts** — everything Instagram streams into
+the favorites page HTML on first load; its own pagination reports
+`has_next_page: false` (cursor replay logged `replayLoops=0`). So after the
+harvest, `WebViewStore.densifyHarvest()` runs `ContentFilter.densityScript` in
+the same logged-in harvest webview: it resolves each favorite to a user id
+(from the harvested edges, else `web_profile_info`), fetches
+`/api/v1/feed/user/<id>/`, keeps a 30-day window (≤12/user, ≤50 total), and
+**appends** the posts to the streamed edges. Rules that keep it Relay-safe:
+streamed edges stay first and untouched (**no sorting anywhere**); each appended
+edge is a **deep clone of a real harvested edge** with only `media` replaced by
+the real api/v1 media object (missing keys null-filled from the template — the
+timeline connection is `xdt_api__v1__*`, the same shape family); de-duped by
+media id; clips (reels) and content-less items skipped. **Fail-safe:** any
+error/empty result falls back to the streamed-only harvest unchanged. Log:
+`[BI-density] appended N profile posts`. Appended edges also pass through
+`sanitizeFavEdges` with everything else.
 
 ## Files & symbols
 

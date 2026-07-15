@@ -50,23 +50,28 @@ cause is understood.
 
 ---
 
-## 2. Favorites feed density ceiling (~2–3 posts)  ⬅ NEXT PRIORITY
+## 2. Favorites feed density ceiling (~2–3 posts)
 
-**Requirement:** R1 (quality of). **Status:** OPEN, now unblocked (#1 is fixed
-and rendering on device). Agreed next task: **show more posts from favorites.**
+**Requirement:** R1 (quality of). **Status:** implemented (density pass), pending
+on-device verification.
 
-Instagram streams only ~2–3 posts into the favorites page HTML, and its favorites
-pagination reports `has_next_page: false` (a cursor-replay attempt logged
-`replayLoops=0`). So the harvest can't get more from that feed.
+Instagram streams only ~2–3 posts into the favorites page HTML and its favorites
+pagination reports `has_next_page: false`, so the harvest alone can't get more.
+The density pass (`WebViewStore.densifyHarvest()` → `ContentFilter.densityScript`)
+now fetches each favorite's recent profile media (`/api/v1/feed/user/<id>/`,
+30-day window, ≤12/user, ≤50 total) and **appends** it to the streamed edges —
+template-cloned edges, real api/v1 media, de-duped, clips skipped, **never
+sorted**, fail-safe fallback to streamed-only. See `favorites-feed.md` → Density
+pass.
 
-**Next step (safe).** Add a **separate data source**: fetch each favorite's own
-recent profile media (`/api/v1/feed/user/<id>/` or `web_profile_info` media
-edges), filter to a recency window, map into the same timeline-edge shape, and
-**append** to the harvested edges. It flows through `sanitizeFavEdges` (which
-already de-dupes by `media.pk||id||code`, drops non-post nodes, and preserves
-order — the invariants that hang Relay), and both splice paths (SSR `JSON.parse`
-and XHR) render whatever edges land there. **Never reorder/sort the final array.**
-Verify against the `[favshape]`/`[edgediff]` diagnostics before shipping.
+**Known risk.** A prior attempt to *synthesize* timeline edges made Relay throw;
+this pass mitigates by cloning real harvested edges and using real api/v1 media
+objects, but a device run must confirm Relay renders the appended posts (watch
+`[BI-density] appended N`, then the `[feed]` census showing them `(shown)`; if
+the spinner returns, the fail-safe streamed-only path is one flag away).
+
+**Verify on device.** Feed should show noticeably more than 3 posts, all from
+favorites, streamed posts first, then per-account recents.
 
 ---
 
