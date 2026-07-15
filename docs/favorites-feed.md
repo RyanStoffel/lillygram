@@ -15,15 +15,16 @@ feed. So we keep the real home page and **swap the feed data underneath it.**
 
 ## The pipeline (6 steps)
 
-1. **Sync app picks → Instagram's server Favorites list.**
+1. **Sync app picks → Instagram's server Favorites list (two-way reconcile).**
    `WebViewStore.syncFavoritesToInstagram()` resolves each picked username → user
-   id (`GET /api/v1/users/web_profile_info/?username=…`, id at `data.user.id`)
-   and writes the set into Instagram's server-side Favorites ("besties") list via
-   `POST /api/v1/friendships/set_besties/`
-   (`module=favorites_home_list&source=audience_manager&add=<JSON ids>&remove=[]`,
-   headers `X-IG-App-ID: 936619743392459` + `X-CSRFToken` from cookie). This is
-   what makes R1 read from the **official** Favorites list. Native log:
-   `[BI-sync] set_besties status=200 synced=N/N`.
+   id (`GET /api/v1/users/web_profile_info/?username=…`, id at `data.user.id`),
+   reads the current server list (probing `/api/v1/friendships/besties/…`), and
+   reconciles via `POST /api/v1/friendships/set_besties/`
+   (`module=favorites_home_list&source=audience_manager&add=<missing picks>&
+   remove=<deselected entries>`, headers `X-IG-App-ID: 936619743392459` +
+   `X-CSRFToken` from cookie); read failure degrades to add-only. This is what
+   makes R1 read from the **official** Favorites list. Native log:
+   `[BI-sync] set_besties status=200 add=N remove=M … read=K via <url>`.
 
 2. **Harvest the favorites feed in a hidden webview.**
    `WebViewStore.harvestFavorites()` loads `https://www.instagram.com/?variant=favorites`
@@ -111,7 +112,9 @@ as **either** `variant=home` or `variant=favorites`. Both use the same
 The first two invariants are now **enforced in code** by `sanitizeFavEdges()`,
 which runs at the single choke point (`__biSetFavEdges`) where harvested edges
 enter the live feed: it keeps only `node.media` posts, strictly de-dupes by
-`media.pk||id||code`, and preserves incoming order (never sorts). It does not
+`media.pk||id||code`, drops clips (`product_type === 'clips'` — R2, and
+stripping reels at the data layer avoids the render-then-hide flicker the DOM
+filter causes), and preserves incoming order (never sorts). It does not
 license reordering upstream — order still has to arrive correct — but it stops
 duplicate/non-post edges from ever reaching the splice.
 
@@ -178,9 +181,12 @@ error/empty result falls back to the streamed-only harvest unchanged. Log:
 ## Known coupling / caveat
 
 The feed reflects Instagram's **server-side** Favorites list. The app's
-onboarding picks drive it only because `syncFavoritesToInstagram()` writes them
-into that list — which **mutates the user's real Instagram Favorites**. There is
-no confirmed endpoint to *read* the current server list, so the sync currently
-only **adds** picks; pre-existing Instagram favorites are not removed and could
-also appear. See `known-issues.md`.
+onboarding picks drive it because `syncFavoritesToInstagram()` **reconciles**
+that list to match the picks exactly: it reads the current list (probing
+`/api/v1/friendships/besties/?module=favorites_home_list`, then plain
+`besties/`), then `set_besties` with `add` = missing picks and `remove` =
+deselected entries. If the read probe fails it falls back to add-only. Either
+way this **mutates the user's real Instagram Favorites** — including removing
+accounts deselected in-app. Log: `[BI-sync] set_besties status=200 add=N
+remove=M ... read=K via <url>`. See `known-issues.md`.
 </content>

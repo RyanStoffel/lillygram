@@ -573,6 +573,11 @@ enum ContentFilter {
           // even though the swap logs success. Require real media content.
           if (!media) continue;
           if (!(media.image_versions2 || media.carousel_media || media.video_versions)) continue;
+          // R2: no reels in the home feed. The favorites feed can stream a
+          // favorite's reel; dropping it here (data layer) instead of letting
+          // the DOM filter hide it post-render kills the render-then-hide
+          // flicker/gap.
+          if ((media.product_type || '') === 'clips') continue;
           const id = media.pk || media.id || media.code;
           if (id != null) {
             const key = String(id);
@@ -1629,6 +1634,7 @@ enum ContentFilter {
     const appended = [];
     const idList = [];
     for (const k in ids) { if (idList.indexOf(ids[k]) === -1) idList.push(ids[k]); }
+    const stats = [];
     for (const uid of idList) {
       if (edges.length + appended.length >= MAX_TOTAL) break;
       let items = [];
@@ -1636,10 +1642,10 @@ enum ContentFilter {
         const r = await fetch('/api/v1/feed/user/' + uid + '/?count=' + PER_USER, {
           credentials: 'include', headers: { 'X-IG-App-ID': APP_ID }
         });
-        if (!r.ok) continue;
+        if (!r.ok) { stats.push(uid + ':' + r.status); continue; }
         const j = await r.json();
         items = j.items || [];
-      } catch (err) { continue; }
+      } catch (err) { stats.push(uid + ':err'); continue; }
       let kept = 0;
       for (const item of items) {
         if (!item) continue;
@@ -1659,10 +1665,12 @@ enum ContentFilter {
         kept++;
         if (edges.length + appended.length >= MAX_TOTAL) break;
       }
+      stats.push(uid + ':ok' + kept);
     }
     data.edges = edges.concat(appended);
     data.count = data.edges.length;
     data.appended = appended.length;
+    data.fetch = stats.join(' ');
     return JSON.stringify(data);
     """
 

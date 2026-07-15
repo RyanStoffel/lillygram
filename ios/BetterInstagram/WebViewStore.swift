@@ -22,6 +22,7 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     private let favHarvestController = WKUserContentController()
     private var cachedFavEdgesJSON: String?
     private var didReloadHomeForFavorites = false
+    private var didRunLaunchSync = false
     private let blockedExactPaths: Set<String> = ["/reels", "/reels/", "/explore", "/explore/"]
 
     private let startURLs: [NavTarget: String] = [
@@ -166,19 +167,26 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         }
     }
 
-    /// Resolve each picked account to its numeric user id and write the whole
-    /// set into Instagram's server-side Favorites list ("besties" /
-    /// `favorites_home_list`) via `set_besties/`. Runs inside the logged-in home
-    /// webview so it rides the page's session cookies + csrftoken. This is what
-    /// makes the ?variant=favorites feed reflect the app's selection.
+    /// Resolve each picked account to its numeric user id and make Instagram's
+    /// server-side Favorites list ("besties" / `favorites_home_list`) match the
+    /// picks EXACTLY: read the current list (probing the besties list endpoint),
+    /// then `set_besties` with add = picks not on the list and remove = list
+    /// entries not picked. If no read endpoint responds, falls back to add-only
+    /// (the old behavior). Runs inside the logged-in home webview so it rides
+    /// the page's session cookies + csrftoken. This is what makes the
+    /// ?variant=favorites feed reflect the app's selection.
     @MainActor
-    func syncFavoritesToInstagram() async {
+    @discardableResult
+    func syncFavoritesToInstagram() async -> String {
         let usernames = favorites.favorites.map(\.username)
-        guard !usernames.isEmpty, let webView = webViews[.home] else { return }
+        guard !usernames.isEmpty, let webView = webViews[.home] else { return "skipped" }
         let script = """
         const APP_ID = '936619743392459';
         const csrf = (document.cookie.match(/csrftoken=([^;]+)/) || [])[1] || '';
-        const ids = [];
+        const log = function(m) {
+            try { window.webkit.messageHandlers.biLog.postMessage('[sync] ' + m); } catch (e) {}
+        };
+        const resolved = [];
         for (const name of usernames) {
             try {
                 const r = await fetch('/api/v1/users/web_profile_info/?username=' +
@@ -188,31 +196,143 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 if (!r.ok) { continue; }
                 const j = await r.json();
                 const id = j && j.data && j.data.user && j.data.user.id;
-                if (id) { ids.push(String(id)); }
+                if (id) { resolved.push({ name: name, id: String(id) }); }
             } catch (e) {}
         }
-        if (!ids.length) { return 'no ids resolved'; }
-        const res = await fetch('/api/v1/friendships/set_besties/', {
-            method: 'POST', credentials: 'include',
-            headers: {
-                'X-IG-App-ID': APP_ID,
-                'X-CSRFToken': csrf,
-                'X-Requested-With': 'XMLHttpRequest',
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            body: new URLSearchParams({
-                module: 'favorites_home_list',
-                source: 'audience_manager',
-                add: JSON.stringify(ids),
-                remove: JSON.stringify([])
-            }).toString()
-        });
-        return 'set_besties status=' + res.status + ' synced=' + ids.length + '/' + usernames.length;
+        if (!resolved.length) { return 'no ids resolved'; }
+        const ids = resolved.map(function(r) { return r.id; });
+        // Ground truth per pick: friendships/show. is_feed_favorite is the
+        // FAVORITES-list flag; is_bestie is Close Friends (fallback only when
+        // is_feed_favorite is absent). Instagram only allows Favorites for
+        // FOLLOWED accounts (set_besties silently ignores the rest), so
+        // non-followed picks are surfaced.
+        const favFlag = function(j) {
+            return (typeof j.is_feed_favorite === 'boolean') ? j.is_feed_favorite : !!j.is_bestie;
+        };
+        const state = {};
+        const flags = [];
+        for (const r of resolved) {
+            try {
+                const res = await fetch('/api/v1/friendships/show/' + r.id + '/', {
+                    credentials: 'include', headers: { 'X-IG-App-ID': APP_ID }
+                });
+                if (!res.ok) { log('show ' + r.name + ' status=' + res.status); continue; }
+                const j = await res.json();
+                state[r.id] = { following: !!j.following, fav: favFlag(j), bestie: !!j.is_bestie };
+                flags.push(r.name + ':follow=' + (j.following ? 1 : 0) +
+                    ' bestie=' + (j.is_bestie ? 1 : 0) +
+                    ' fav=' + (typeof j.is_feed_favorite === 'boolean' ? (j.is_feed_favorite ? 1 : 0) : '?'));
+            } catch (e) {}
+        }
+        log('flags ' + flags.join(' | '));
+        const notFollowed = resolved.filter(function(r) {
+            return state[r.id] && !state[r.id].following;
+        }).map(function(r) { return r.name; });
+        const add = resolved.filter(function(r) {
+            const s = state[r.id];
+            return !s || (s.following && !s.fav);
+        }).map(function(r) { return r.id; });
+        const hdrs = {
+            'X-IG-App-ID': APP_ID,
+            'X-CSRFToken': csrf,
+            'X-Requested-With': 'XMLHttpRequest',
+            'Content-Type': 'application/x-www-form-urlencoded'
+        };
+        // Favorites are written by the GraphQL mutation the web "Add to
+        // favorites" chevron fires (captured on device 2026-07-14):
+        // usePolarisUpdateFeedFavoritesUpdatableFavoriteMutation, a single call
+        // that takes data.add[]/remove[]. Goes to /api/graphql (NOT the UA-gated
+        // api/v1 endpoints). set_besties writes CLOSE FRIENDS, not favorites, so
+        // it is only used for the one-time CF cleanup below.
+        // Anti-CSRF tokens for the mutation are scraped from the page HTML.
+        const html = document.documentElement.innerHTML;
+        function tok(re) { const m = html.match(re); return m ? m[1] : ''; }
+        const dtsg = tok(/"DTSGInitialData",\\[\\],\\{"token":"([^"]+)"/) ||
+            tok(/name=\\"fb_dtsg\\" value=\\"([^"]+)\\"/);
+        const lsd = tok(/"LSD",\\[\\],\\{"token":"([^"]+)"/);
+        const av = tok(/"actorID":"([0-9]+)"/) ||
+            (document.cookie.match(/ds_user_id=([0-9]+)/) || [])[1] || '';
+        const FAV_DOC_ID = '27127248780249605';
+        const FAV_FN = 'usePolarisUpdateFeedFavoritesUpdatableFavoriteMutation';
+        let wrote = 0;
+        if (add.length && dtsg) {
+            try {
+                const body = new URLSearchParams({
+                    av: av, __a: '1', __comet_req: '7',
+                    fb_dtsg: dtsg, lsd: lsd,
+                    fb_api_caller_class: 'RelayModern',
+                    fb_api_req_friendly_name: FAV_FN,
+                    variables: JSON.stringify({ data: { add: add, remove: [], source: 'favorites_management' } }),
+                    server_timestamps: 'true',
+                    doc_id: FAV_DOC_ID
+                });
+                const r = await fetch('/api/graphql', {
+                    method: 'POST', credentials: 'include',
+                    headers: {
+                        'X-CSRFToken': csrf, 'X-IG-App-ID': APP_ID, 'X-FB-LSD': lsd,
+                        'X-FB-Friendly-Name': FAV_FN,
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    },
+                    body: body.toString()
+                });
+                const t = await r.text();
+                if (r.ok && t.indexOf('"errors"') === -1) { wrote = add.length; }
+                else { log('favmut status=' + r.status + ' body=' + t.slice(0, 200)); }
+            } catch (e) { log('favmut err ' + e); }
+        } else if (add.length) {
+            log('favmut SKIPPED: no fb_dtsg token (dtsg=' + (dtsg ? 'y' : 'n') + ' lsd=' + (lsd ? 'y' : 'n') + ')');
+        }
+        // Verify the writes took: re-check the favorites flag for every add.
+        let confirmed = 0;
+        for (const id of add) {
+            try {
+                const r = await fetch('/api/v1/friendships/show/' + id + '/', {
+                    credentials: 'include', headers: { 'X-IG-App-ID': APP_ID }
+                });
+                if (!r.ok) { continue; }
+                const j = await r.json();
+                if (favFlag(j)) { confirmed++; }
+            } catch (e) {}
+        }
+        // One-time cleanup: the old set_besties path polluted the user's CLOSE
+        // FRIENDS list with the picks; remove them from it once.
+        let cleaned = -1;
+        if (cleanupBesties) {
+            const bestiePicks = resolved.filter(function(r) {
+                return state[r.id] && state[r.id].bestie;
+            }).map(function(r) { return r.id; });
+            cleaned = 0;
+            if (bestiePicks.length) {
+                try {
+                    const res = await fetch('/api/v1/friendships/set_besties/', {
+                        method: 'POST', credentials: 'include', headers: hdrs,
+                        body: new URLSearchParams({
+                            module: 'favorites_home_list',
+                            source: 'audience_manager',
+                            add: JSON.stringify([]),
+                            remove: JSON.stringify(bestiePicks)
+                        }).toString()
+                    });
+                    if (res.ok) { cleaned = bestiePicks.length; }
+                    else { log('cleanup status=' + res.status); }
+                } catch (e) {}
+            }
+        }
+        const followNote = notFollowed.length ?
+            ' NOT-FOLLOWED(cannot favorite): ' + notFollowed.join(',') : '';
+        const cleanNote = cleaned >= 0 ? ' cleanedCF=' + cleaned : '';
+        if (!add.length) {
+            return 'already in sync (' + ids.length + ' picks)' + followNote + cleanNote;
+        }
+        return 'wrote favorites add=' + add.length + ' ok=' + wrote +
+            ' confirmed=' + confirmed + ' picks=' + ids.length + '/' + usernames.length +
+            followNote + cleanNote;
         """
+        let cleanupNeeded = !UserDefaults.standard.bool(forKey: "biDidCleanBesties")
         let result: String = await withCheckedContinuation { continuation in
             webView.callAsyncJavaScript(
                 script,
-                arguments: ["usernames": usernames],
+                arguments: ["usernames": usernames, "cleanupBesties": cleanupNeeded],
                 in: nil,
                 in: .page
             ) { r in
@@ -223,6 +343,10 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             }
         }
         print("[BI-sync] \(result)")
+        if result.contains("cleanedCF=") {
+            UserDefaults.standard.set(true, forKey: "biDidCleanBesties")
+        }
+        return result
     }
 
     // MARK: - Favorites harvest
@@ -303,7 +427,8 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             switch result {
             case .success(let value):
                 if let augmented = value as? String, self.harvestCount(augmented) >= self.harvestCount(json) {
-                    print("[BI-density] appended \(self.harvestCount(augmented) - self.harvestCount(json)) profile posts")
+                    print("[BI-density] appended \(self.harvestCount(augmented) - self.harvestCount(json)) profile posts"
+                        + " fetch=\(self.harvestFetchStats(augmented))")
                     self.finishHarvest(augmented)
                 } else {
                     print("[BI-density] no augmentation; using streamed edges only")
@@ -319,16 +444,16 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     private func finishHarvest(_ json: String) {
         cachedFavEdgesJSON = json
         deliverFavEdges()
+        // Refresh the preamble so window.__biFavEdgesPreload carries the latest
+        // edges on any future page load (the document-start SSR splice reads it).
+        if harvestCount(json) > 0 {
+            installUserScripts()
+        }
         // After the first successful harvest, reload home once so the
         // now-cached favorites splice lands deterministically (no
         // cold-start race).
         if harvestCount(json) > 0 && !didReloadHomeForFavorites {
             didReloadHomeForFavorites = true
-            // Re-install user scripts so the preamble now carries the
-            // harvested edges (window.__biFavEdgesPreload); the reload
-            // then splices them into the server-streamed feed at
-            // document start.
-            installUserScripts()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 self?.webViews[.home]?.reload()
             }
@@ -349,6 +474,13 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let count = obj["count"] as? Int else { return 0 }
         return count
+    }
+
+    private func harvestFetchStats(_ json: String) -> String {
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let stats = obj["fetch"] as? String else { return "" }
+        return stats
     }
 
     /// Push cached favorites edges into every webview. Only the home tab's feed
@@ -538,6 +670,19 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         // splice has them even after a navigation resets the page's JS state.
         if cachedFavEdgesJSON != nil {
             deliverFavEdges()
+        }
+        // Once per launch, after the home page exists (the sync's fetches run in
+        // its page context): reconcile the server Favorites list with the app
+        // picks, so a previously failed/partial sync self-heals on every boot.
+        // Re-harvest if a write actually happened so the feed reflects it.
+        if webView === webViews[.home], !didRunLaunchSync, isLoggedIn, favorites.isFilterEnabled {
+            didRunLaunchSync = true
+            Task { @MainActor in
+                let summary = await syncFavoritesToInstagram()
+                if summary.contains("wrote favorites") {
+                    harvestFavorites()
+                }
+            }
         }
     }
 

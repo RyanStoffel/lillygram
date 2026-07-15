@@ -103,27 +103,61 @@ cached favorites when available; keep the splash as the mask, not the fix.
 
 ---
 
-## 5. Sync custom (app) favorites → official Instagram Favorites list  ⬅ NEXT PRIORITY
+## 5. Sync custom (app) favorites → official Instagram Favorites list
 
-**Requirement:** R1. **Status:** partial (one-way ADD only). Agreed next task:
-**make the app's custom favorites fully sync to the official Instagram list.**
+**Requirement:** R1. **Status:** two-way reconcile implemented, pending on-device
+verification of the read endpoint.
 
-The feed reflects Instagram's **server-side** Favorites list, so
-`syncFavoritesToInstagram()` writes the app's picks into the user's real
-Instagram Favorites (`POST set_besties` with `add=<ids>`). Today it only **adds**:
-there is no confirmed endpoint to *read* the current server list, so picks the
-user **deselects** are never removed, and pre-existing Instagram favorites the
-user never picked in-app stay on the list and show in the feed.
+**Key finding (device-confirmed 2026-07-14): `set_besties` (any module) writes
+the CLOSE FRIENDS list (`is_bestie`), NOT the Favorites list
+(`is_feed_favorite`); and the `api/v1/friendships/favorite|besties` endpoints
+reject the web session (`400 useragent mismatch`).** The real favorites write is
+a **GraphQL mutation** (captured from the web "Add to favorites" chevron):
+`POST /api/graphql`, `fb_api_req_friendly_name=
+usePolarisUpdateFeedFavoritesUpdatableFavoriteMutation`, `doc_id=27127248780249605`,
+`variables={"data":{"add":[ids],"remove":[],"source":"favorites_management"}}`
+(unfavorite = `usePolarisUpdateFeedFavoritesUpdatableUnfavoriteMutation`,
+`doc_id=27275847402052259`, with the id in `remove`). `add`/`remove` are arrays,
+so the whole sync is one call. It needs the page's `fb_dtsg` + `lsd` anti-CSRF
+tokens, scraped from the page HTML (`"DTSGInitialData",[],{"token":…}` /
+`"LSD",[],{"token":…}`). **`doc_id`s rotate (~weeks) — re-capture when
+`confirmed=0` returns.** A **one-time cleanup** (`cleanedCF=N`, latched via
+UserDefaults `biDidCleanBesties`) removes the picks from Close Friends
+(set_besties `remove`).
 
-**Next step (make it a true two-way sync).**
-1. Capture a "list current besties/favorites" endpoint from a live session
-   (devtools) so we can read the server list.
-2. Reconcile on `applyFavoritesSelection`: `add` = app picks not on the server
-   list, `remove` = server entries not in app picks (`set_besties` already
-   accepts a `remove` array). Result: the official list == the app's picks
-   exactly.
-3. Until the read endpoint is confirmed, keep the additive sync and document the
-   side-effect (it mutates the real Instagram Favorites list) in onboarding copy.
+**Per-account ground truth.** The besties list probes fail on the web session
+(`400 {"message":"useragent mismatch"}` — the bulk-read endpoint wants the app
+UA; `bestie_list/` is a 404), so the sync uses `/api/v1/friendships/show/<id>/`
+per pick instead. The favorites flag there is **`is_feed_favorite`** (Favorites
+list); `is_bestie` is Close Friends and only used as fallback when
+`is_feed_favorite` is absent. Per pick the sync: skips already-favorited,
+surfaces `NOT-FOLLOWED(cannot favorite): …` (Instagram only allows Favorites
+for followed accounts; `set_besties` silently ignores the rest), and **verifies
+after the write** (`confirmed=N`). A `[sync] flags` log line dumps each pick's
+raw `follow/bestie/fav` flags.
+
+**UI caveat.** The star badge / "Remove from favorites" menu on density-appended
+posts renders from OUR spliced media JSON (null-filled friendship data), so its
+absence there does NOT indicate server state — verify in the official Instagram
+app/web instead.
+
+**Triggers.** The sync runs (a) when picks are applied in the favorites editor
+and (b) **once per launch** after the home tab finishes loading, so a
+failed/partial sync self-heals on boot; if the launch sync wrote changes it
+re-harvests so the feed follows.
+
+**Verify on device.** After changing picks (or just relaunching), `[BI-sync]`
+should log `wrote favorites add=N ok=N confirmed=N … cleanedCF=K` (or `already
+in sync`). `confirmed < add` means the favorite/ endpoint is being rejected —
+capture the web chevron's request in devtools. `NOT-FOLLOWED` names picks that
+need a follow first. Remove-side reconcile (unfavoriting deselected picks) is
+still open: the bulk list-read endpoints reject the web UA
+(`400 useragent mismatch`), so there is no way yet to enumerate server-side
+favorites that are not current picks.
+
+**Note.** The sync intentionally mutates the user's real Instagram Favorites
+(including removing entries deselected in-app); this side-effect should be
+stated in onboarding copy.
 
 ---
 
