@@ -197,10 +197,18 @@ enum ContentFilter {
       function hideSponsoredAndReels() {
         if (isMediaPermalink()) return;
         scanRoot().querySelectorAll('article').forEach(filterArticle);
-        scanRoot().querySelectorAll('a[href^="/reel/"], a[href^="/reels/"]').forEach(function(a) {
-          if (a.getAttribute('href') === '/reels/') return;
-          if (!a.closest('article')) hide(a);
-        });
+        // Bare (non-article) reel links are feed/explore chrome to strip —
+        // except inside a DM thread, where a friend's shared reel is R2's one
+        // named exception and must stay tappable. DM messages aren't wrapped
+        // in <article>, so without this guard the share card's own link was
+        // being hidden by the same rule meant for loose feed/explore reel
+        // promos, which also broke its hit-testing (not just its visibility).
+        if (!/^\\/direct\\//.test(location.pathname)) {
+          scanRoot().querySelectorAll('a[href^="/reel/"], a[href^="/reels/"]').forEach(function(a) {
+            if (a.getAttribute('href') === '/reels/') return;
+            if (!a.closest('article')) hide(a);
+          });
+        }
       }
 
       function hideFeedNoise() {
@@ -908,6 +916,174 @@ enum ContentFilter {
         }, true);
       }
 
+      // Mark the visual layers over each DM share-card anchor as clickable.
+      // This helps WebKit's tap classification, but the capture-phase routing
+      // below is the reliable path because the visual card and link are siblings.
+      function fixDMShareCardCursor() {
+        if (!/^\\/direct\\//.test(location.pathname)) return;
+        document.querySelectorAll(
+          'a[href*="/reel/"], a[href*="/reels/"], a[href*="/p/"]'
+        ).forEach(function(a) {
+          const r = a.getBoundingClientRect();
+          if (r.width <= 0 || r.height <= 0) return;
+          const cx = r.left + r.width / 2;
+          const cy = r.top + r.height / 2;
+          let node = document.elementFromPoint(cx, cy);
+          for (let i = 0; i < 4 && node; i++) {
+            if (node.style && node.style.cursor !== 'pointer') {
+              node.style.cursor = 'pointer';
+            }
+            node = node.parentElement;
+          }
+          if (a.style.cursor !== 'pointer') a.style.cursor = 'pointer';
+        });
+      }
+
+      function reelURLForAnchor(anchor) {
+        if (!anchor) return null;
+        try {
+          const url = new URL(anchor.getAttribute('href') || '', location.href);
+          if (url.hostname !== 'instagram.com' && !url.hostname.endsWith('.instagram.com')) return null;
+          if (!/^\\/reels?\\/[A-Za-z0-9_-]+\\/?$/.test(url.pathname)) return null;
+          return url;
+        } catch (e) {
+          return null;
+        }
+      }
+
+      function reelURLInCard(node) {
+        const urls = {};
+        const anchors = [];
+        if (node.matches && node.matches('a[href]')) anchors.push(node);
+        node.querySelectorAll('a[href]').forEach(function(anchor) { anchors.push(anchor); });
+        anchors.forEach(function(anchor) {
+          const url = reelURLForAnchor(anchor);
+          if (url) urls[url.pathname] = url;
+        });
+        const paths = Object.keys(urls);
+        return paths.length === 1 ? urls[paths[0]] : null;
+      }
+
+      function reelURLNearDMTarget(target, x, y) {
+        if (!/^\\/direct\\/t\\//.test(location.pathname) || !(target instanceof Element)) return null;
+        const anchor = target.closest('a[href]');
+        if (anchor) return reelURLForAnchor(anchor);
+        if (target.closest('input, textarea, select, [contenteditable="true"]')) return null;
+        let node = target;
+        for (let depth = 0; node && node !== document.body && depth < 16; depth++) {
+          const rect = node.getBoundingClientRect();
+          if (rect.height > 0 && rect.height <= window.innerHeight * 0.9) {
+            const url = reelURLInCard(node);
+            if (url) return url;
+          }
+          node = node.parentElement;
+        }
+        if (typeof x !== 'number' || typeof y !== 'number') return null;
+        let nearest = null;
+        let nearestDistance = Infinity;
+        document.querySelectorAll('a[href*="/reel/"], a[href*="/reels/"]').forEach(function(candidate) {
+          const url = reelURLForAnchor(candidate);
+          if (!url) return;
+          const rect = candidate.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0 || rect.bottom < 0 || rect.top > window.innerHeight) return;
+          const dx = Math.max(rect.left - x, 0, x - rect.right);
+          const dy = Math.max(rect.top - y, 0, y - rect.bottom);
+          const distance = Math.sqrt(dx * dx + dy * dy);
+          if (distance < nearestDistance) {
+            nearest = url;
+            nearestDistance = distance;
+          }
+        });
+        if (nearestDistance <= Math.min(220, window.innerWidth * 0.55)) return nearest;
+        return null;
+      }
+
+      function isDMShareCardTap(target) {
+        if (!(target instanceof Element)) return false;
+        let node = target;
+        for (let depth = 0; node && node !== document.body && depth < 10; depth++) {
+          const rect = node.getBoundingClientRect();
+          if (rect.height > window.innerHeight * 0.75) break;
+          const images = node.matches('img') ? [node] : node.querySelectorAll('img');
+          for (let i = 0; i < images.length; i++) {
+            const imageRect = images[i].getBoundingClientRect();
+            if (imageRect.width >= 100 && imageRect.height >= 100) return true;
+          }
+          node = node.parentElement;
+        }
+        return false;
+      }
+
+      // The visible DM card and its permalink are siblings, so Instagram's
+      // delegated handler receives the first trusted click on a plain div but
+      // does not navigate. Resolve the link through their smallest common
+      // container and navigate synchronously before Instagram consumes it.
+      function installDMReelClickRouting() {
+        if (window.__biDMReelClickPatched) return;
+        window.__biDMReelClickPatched = true;
+        let touch = null;
+        let misses = 0;
+        document.addEventListener('touchstart', function(e) {
+          touch = null;
+          if (!/^\\/direct\\/t\\//.test(location.pathname) || e.touches.length !== 1) return;
+          const point = e.touches[0];
+          touch = { id: point.identifier, x: point.clientX, y: point.clientY, target: e.target };
+        }, { capture: true, passive: true });
+        document.addEventListener('touchmove', function(e) {
+          if (!touch) return;
+          for (let i = 0; i < e.touches.length; i++) {
+            const point = e.touches[i];
+            if (point.identifier !== touch.id) continue;
+            if (Math.abs(point.clientX - touch.x) > 12 || Math.abs(point.clientY - touch.y) > 12) touch = null;
+            break;
+          }
+        }, { capture: true, passive: true });
+        document.addEventListener('touchend', function(e) {
+          const tap = touch;
+          touch = null;
+          if (!tap) return;
+          let point = null;
+          for (let i = 0; i < e.changedTouches.length; i++) {
+            if (e.changedTouches[i].identifier === tap.id) { point = e.changedTouches[i]; break; }
+          }
+          if (!point || Math.abs(point.clientX - tap.x) > 12 || Math.abs(point.clientY - tap.y) > 12) return;
+          const url = reelURLNearDMTarget(tap.target, point.clientX, point.clientY);
+          if (!url) {
+            if (isDMShareCardTap(tap.target)) {
+              const path = location.pathname;
+              setTimeout(function() {
+                if (location.pathname !== path || shouldLockScroll()) return;
+                const current = document.elementFromPoint(point.clientX, point.clientY);
+                if (!current || !current.click || current.closest('input, textarea, select, [contenteditable="true"]')) return;
+                biLog('[dm] activating URL-less card after first touch target=' + current.tagName);
+                current.click();
+              }, 120);
+              return;
+            }
+            if (misses < 3) {
+              misses++;
+              biLog('[dm] tap miss target=' + (tap.target.tagName || '?') +
+                ' reelAnchors=' + document.querySelectorAll('a[href*="/reel/"], a[href*="/reels/"]').length);
+            }
+            return;
+          }
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          biLog('[dm] routing first touch to ' + url.href);
+          window.location.assign(url.href);
+        }, { capture: true, passive: false });
+        document.addEventListener('touchcancel', function() { touch = null; }, { capture: true, passive: true });
+        document.addEventListener('click', function(e) {
+          if (!e.isTrusted || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+          const url = reelURLNearDMTarget(e.target, e.clientX, e.clientY);
+          if (!url) return;
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          biLog('[dm] routing first click to ' + url.href);
+          window.location.assign(url.href);
+        }, true);
+      }
+
       function preventNativeFullscreen() {
         if (window.__biFullscreenPatched) return;
         window.__biFullscreenPatched = true;
@@ -1477,6 +1653,7 @@ enum ContentFilter {
           fixDirectInbox();
           fixDirectMediaQuality();
           upgradeDirectPreviews();
+          fixDMShareCardCursor();
           fixHomeHeader();
           removeReservedNavSpace();
           reportNavVisibility();
@@ -1517,6 +1694,7 @@ enum ContentFilter {
       installXHRFilter();
       installHistoryHook();
       installGestureLocks();
+      installDMReelClickRouting();
       preventNativeFullscreen();
       guardLocation();
       window.__biReapply = scheduleApply;
