@@ -301,7 +301,7 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         let base = pageBackgroundCache[identifier] ?? Color(.systemBackground)
         bridge.isNavVisible = navVisibleCache[identifier] ?? true
         bridge.pageBackground = base
-        bridge.safeAreaBackground = .black
+        bridge.safeAreaBackground = base
     }
 
     private func setPresentation(locked: Bool, immersive: Bool, for webView: WKWebView) {
@@ -310,7 +310,8 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         scrollLockedCache[identifier] = locked
         webView.scrollView.isScrollEnabled = !locked
         guard webView === webViews[activeTarget] else { return }
-        bridge.safeAreaBackground = .black
+        let base = pageBackgroundCache[identifier] ?? Color(.systemBackground)
+        bridge.safeAreaBackground = base
     }
 
     // MARK: - Favorites
@@ -1457,7 +1458,7 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                     }
                     if source === self.webViews[self.activeTarget] {
                         self.bridge.pageBackground = color
-                        self.bridge.safeAreaBackground = .black
+                        self.bridge.safeAreaBackground = color
                     }
                 }
             }
