@@ -36,7 +36,8 @@ enum ContentFilter {
         .__bi_lockedscroll { overflow: hidden !important; touch-action: none !important; overscroll-behavior: none !important; }
         html.__bi_noscroll, html.__bi_noscroll body { overflow: hidden !important; height: 100% !important; touch-action: none !important; }
         html.__bi_noscroll * { touch-action: none !important; }
-        html.__bi_noscroll [role="dialog"]:not(:has(video)), html.__bi_noscroll [role="dialog"]:not(:has(video)) * { touch-action: auto !important; }
+        html.__bi_noscroll [role="dialog"]:not(:has(video)) { touch-action: pan-y !important; -webkit-overflow-scrolling: touch; }
+        html.__bi_noscroll [role="dialog"]:not(:has(video)) * { touch-action: auto !important; }
         a, [role="button"], [role="link"] { cursor: pointer; }
         a, button, [role="button"], [role="link"], input, select, textarea { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
         #__bi_star_btn { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); z-index: 3; background: none; border: 0; padding: 8px; display: flex; align-items: center; }
@@ -2089,6 +2090,15 @@ enum ContentFilter {
         lastApply = Date.now();
         try {
           ensureStyleInjected();
+          // Route-scope the per-surface DOM passes: each fix* helper already
+          // self-guards on its exact path, but skipping the call entirely on
+          // unrelated routes avoids their querySelectorAll traversals firing on
+          // every home-feed mutation (P5: keep scroll at ~60fps).
+          const path = location.pathname;
+          const isHome = path === '/';
+          const isDirect = /^\\/direct\\//.test(path);
+          const isSearch = path.indexOf('/explore/search') === 0;
+
           hideSponsoredAndReels();
           hideFeedNoise();
           lockToPrimaryReel();
@@ -2096,14 +2106,20 @@ enum ContentFilter {
           forcePlaysInline();
           dismissAppNag();
           hideOriginalNav();
-          hideBottomBars();
-          fixSearchPage();
-          fixDirectInbox();
-          fixDirectMediaQuality();
-          upgradeDirectPreviews();
-          fixDMShareCardCursor();
-          fixHomeHeader();
-          removeReservedNavSpace();
+          // Native tab bar covers the home bottom; hideBottomBars' div/nav/footer
+          // scan is the heaviest pass, so skip it on the home feed only.
+          if (!isHome) hideBottomBars();
+          if (isSearch) fixSearchPage();
+          if (isDirect) {
+            fixDirectInbox();
+            fixDirectMediaQuality();
+            upgradeDirectPreviews();
+            fixDMShareCardCursor();
+          }
+          if (isHome) {
+            fixHomeHeader();
+            removeReservedNavSpace();
+          }
           updateCommentSheet();
           reportNavVisibility();
           reportAvatar();
@@ -2154,9 +2170,32 @@ enum ContentFilter {
       window.__biSetFavorites = setFavorites;
       setFavorites(window.__biFavorites, window.__biFavoritesEnabled);
 
+      // A class-only mutation whose token set differs from its previous value
+      // solely by our own __bi_* markers is self-inflicted churn from a prior
+      // apply() pass; treat those batches as no-ops so they don't reschedule
+      // another full apply() (P5: avoids a hide/observe/re-apply feedback loop).
+      function selfClassChurn(m) {
+        if (m.type !== 'attributes' || m.attributeName !== 'class') return false;
+        const strip = function(value) {
+          return (value || '').split(/\\s+/).filter(function(token) {
+            return token && token.indexOf('__bi_') !== 0;
+          }).sort().join(' ');
+        };
+        const now = (m.target && m.target.getAttribute) ? m.target.getAttribute('class') : '';
+        return strip(m.oldValue) === strip(now);
+      }
+
       const observer = new MutationObserver(function(mutations) {
         let viewerSurfaceChanged = false;
+        let realChange = false;
         for (let i = 0; i < mutations.length; i++) {
+          const mutation = mutations[i];
+          if (mutation.type === 'childList') {
+            if ((mutation.addedNodes && mutation.addedNodes.length) ||
+                (mutation.removedNodes && mutation.removedNodes.length)) realChange = true;
+          } else if (!selfClassChurn(mutation)) {
+            realChange = true;
+          }
           if (mutations[i].type === 'attributes' && /^\\/(stories|reels?)\\//.test(location.pathname)) {
             viewerSurfaceChanged = true;
           }
@@ -2196,7 +2235,7 @@ enum ContentFilter {
             reportBackgroundColor();
           }, 50);
         }
-        scheduleApply();
+        if (realChange) scheduleApply();
       });
 
       function start() {
@@ -2205,6 +2244,7 @@ enum ContentFilter {
             childList: true,
             subtree: true,
             attributes: true,
+            attributeOldValue: true,
             attributeFilter: ['class', 'style']
           });
           apply();
