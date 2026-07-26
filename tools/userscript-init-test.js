@@ -145,6 +145,58 @@ setTimeout(() => {
     check('apply() ran without error', !has('[error] apply failed'),
       biLogs().filter((l) => l.startsWith('[error]')).join(' | '));
 
+    // --- instant immersive front-run (path-based, no geometry) ------------
+    // jsdom has no layout, so the geometry-based detectors
+    // (storyViewerSurface/reelViewerSurface) can never fire. Any immersive=true
+    // here therefore proves immersivePathSurface() front-ran the geometry,
+    // driven synchronously by the patched history hook -> onRouteChange ->
+    // updateScrollLock -> postPresentation.
+    const presentations = () => logs.filter((l) => l[0] === 'biPresentation');
+    const lastPresentation = () => {
+      const p = presentations();
+      return p.length ? p[p.length - 1][1] : null;
+    };
+    const navigate = (path) => {
+      const before = presentations().length;
+      window.history.pushState({}, '', path);
+      return presentations().length - before; // number of new (non-deduped) posts
+    };
+
+    // a. story route -> immersive=true, synchronously.
+    let posted = navigate('/stories/someuser/123/');
+    check('story route front-runs immersive=true synchronously',
+      posted === 1 && lastPresentation() && lastPresentation().immersive === true,
+      'path=' + window.location.pathname + ' posted=' + posted +
+        ' last=' + JSON.stringify(lastPresentation()));
+
+    // c. navigating back to the feed -> immersive=false.
+    posted = navigate('/');
+    check('feed route posts immersive=false',
+      posted === 1 && lastPresentation() && lastPresentation().immersive === false,
+      'path=' + window.location.pathname + ' posted=' + posted +
+        ' last=' + JSON.stringify(lastPresentation()));
+
+    // b. reel permalink -> immersive=true.
+    posted = navigate('/reels/ABC123/');
+    check('reel permalink front-runs immersive=true synchronously',
+      posted === 1 && lastPresentation() && lastPresentation().immersive === true,
+      'path=' + window.location.pathname + ' posted=' + posted +
+        ' last=' + JSON.stringify(lastPresentation()));
+
+    // reset to feed (immersive=false) before the section-page edge case.
+    navigate('/');
+
+    // d. reel SECTION page (/reels/audio/...) must NOT be immersive from the
+    // path front-run; geometry can't fire in jsdom, so it stays false.
+    posted = navigate('/reels/audio/123/');
+    check('reel section page does not front-run immersive=true',
+      lastPresentation() && lastPresentation().immersive === false && posted === 0,
+      'path=' + window.location.pathname + ' posted=' + posted +
+        ' last=' + JSON.stringify(lastPresentation()));
+
+    // restore feed route for the remaining stateful checks below.
+    navigate('/');
+
     // Native live-update path (WebViewStore.applyFavoritesSelection).
     let liveUpdateOk = true;
     let liveUpdateErr = '';
@@ -173,7 +225,42 @@ setTimeout(() => {
         check('degraded state hides unknown-author articles',
           unknown.classList.contains('__bi_hidden'),
           'classes: ' + unknown.className);
-        report();
+
+        // --- immersive HOLDS through the close animation (regression guard) --
+        // The path front-run flips immersive on instantly, but isImmersiveSurface
+        // must STILL run the geometry detectors so activeStorySurface latches.
+        // Otherwise immersive would flip back to false the instant the route
+        // reverts to the feed — mid-close-animation — reintroducing the base-color
+        // flash the geometry "hold through close" was built to prevent. jsdom has
+        // no layout, so we stub a fullscreen <video> as the story surface and
+        // drive the observer to warm the cache, then assert immersive survives
+        // the route back to the feed while the surface is still onscreen.
+        navigate('/'); // feed baseline (immersive=false)
+        let storyFullscreen = false;
+        const storyVideo = window.document.createElement('video');
+        storyVideo.getBoundingClientRect = () => storyFullscreen
+          ? { width: window.innerWidth, height: window.innerHeight, top: 0, left: 0,
+              right: window.innerWidth, bottom: window.innerHeight, x: 0, y: 0 }
+          : { width: 8, height: 8, top: 0, left: 0, right: 8, bottom: 8, x: 0, y: 0 };
+        window.document.body.appendChild(storyVideo); // outside <main>/<article>
+
+        navigate('/stories/someuser/999/'); // pre-route geometry captured small
+        storyFullscreen = true;
+        storyVideo.classList.add('bi-probe'); // class mutation -> observer warms cache
+
+        setTimeout(() => {
+          const warmed = lastPresentation();
+          const newPosts = navigate('/'); // close: surface still fullscreen+connected
+          check('immersive holds through close animation (geometry cache latched)',
+            lastPresentation() && lastPresentation().immersive === true && newPosts === 0,
+            'warmed=' + JSON.stringify(warmed) +
+              ' afterClose=' + JSON.stringify(lastPresentation()) + ' newPosts=' + newPosts);
+          // cleanup so the run ends on a clean, non-immersive feed state.
+          storyFullscreen = false;
+          storyVideo.remove();
+          navigate('/');
+          setTimeout(report, 100);
+        }, 150);
       }, 700);
     }, 50);
   }, 600);
