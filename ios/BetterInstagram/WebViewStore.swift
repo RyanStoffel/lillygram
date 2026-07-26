@@ -299,9 +299,7 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     private func publishCachedPresentation(for webView: WKWebView) {
         let identifier = ObjectIdentifier(webView)
         let base = pageBackgroundCache[identifier] ?? Color(.systemBackground)
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
+        withAnimation(.easeInOut(duration: 0.25)) {
             bridge.isNavVisible = navVisibleCache[identifier] ?? true
             bridge.pageBackground = base
             bridge.safeAreaBackground = immersiveCache[identifier] == true ? .black : base
@@ -315,9 +313,7 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         webView.scrollView.isScrollEnabled = !locked
         guard webView === webViews[activeTarget] else { return }
         let base = pageBackgroundCache[identifier] ?? Color(.systemBackground)
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
+        withAnimation(.easeInOut(duration: 0.25)) {
             bridge.safeAreaBackground = immersive ? .black : base
         }
     }
@@ -1465,9 +1461,7 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                         self.pageBackgroundCache[ObjectIdentifier(source)] = color
                     }
                     if source === self.webViews[self.activeTarget] {
-                        var transaction = Transaction()
-                        transaction.disablesAnimations = true
-                        withTransaction(transaction) {
+                        withAnimation(.easeInOut(duration: 0.25)) {
                             self.bridge.pageBackground = color
                             if let source,
                                self.immersiveCache[ObjectIdentifier(source)] != true {

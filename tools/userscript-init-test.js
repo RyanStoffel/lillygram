@@ -148,12 +148,6 @@ setTimeout(() => {
     check('apply() ran without error', !has('[error] apply failed'),
       biLogs().filter((l) => l.startsWith('[error]')).join(' | '));
 
-    // --- instant immersive front-run (path-based, no geometry) ------------
-    // jsdom has no layout, so the geometry-based detectors
-    // (storyViewerSurface/reelViewerSurface) can never fire. Any immersive=true
-    // here therefore proves immersivePathSurface() front-ran the geometry,
-    // driven synchronously by the patched history hook -> onRouteChange ->
-    // updateScrollLock -> postPresentation.
     const presentations = () => logs.filter((l) => l[0] === 'biPresentation');
     const lastPresentation = () => {
       const p = presentations();
@@ -162,43 +156,8 @@ setTimeout(() => {
     const navigate = (path) => {
       const before = presentations().length;
       window.history.pushState({}, '', path);
-      return presentations().length - before; // number of new (non-deduped) posts
+      return presentations().length - before;
     };
-
-    // a. story route -> immersive=true, synchronously.
-    let posted = navigate('/stories/someuser/123/');
-    check('story route front-runs immersive=true synchronously',
-      posted === 1 && lastPresentation() && lastPresentation().immersive === true,
-      'path=' + window.location.pathname + ' posted=' + posted +
-        ' last=' + JSON.stringify(lastPresentation()));
-
-    // c. navigating back to the feed -> immersive=false.
-    posted = navigate('/');
-    check('feed route posts immersive=false',
-      posted === 1 && lastPresentation() && lastPresentation().immersive === false,
-      'path=' + window.location.pathname + ' posted=' + posted +
-        ' last=' + JSON.stringify(lastPresentation()));
-
-    // b. reel permalink -> immersive=true.
-    posted = navigate('/reels/ABC123/');
-    check('reel permalink front-runs immersive=true synchronously',
-      posted === 1 && lastPresentation() && lastPresentation().immersive === true,
-      'path=' + window.location.pathname + ' posted=' + posted +
-        ' last=' + JSON.stringify(lastPresentation()));
-
-    // reset to feed (immersive=false) before the section-page edge case.
-    navigate('/');
-
-    // d. reel SECTION page (/reels/audio/...) must NOT be immersive from the
-    // path front-run; geometry can't fire in jsdom, so it stays false.
-    posted = navigate('/reels/audio/123/');
-    check('reel section page does not front-run immersive=true',
-      lastPresentation() && lastPresentation().immersive === false && posted === 0,
-      'path=' + window.location.pathname + ' posted=' + posted +
-        ' last=' + JSON.stringify(lastPresentation()));
-
-    // restore feed route for the remaining stateful checks below.
-    navigate('/');
 
     // --- SSR splice biFavReady post check ---
     // Simulating Instagram's bootloader parsing streamed SSR JSON containing feed__timeline

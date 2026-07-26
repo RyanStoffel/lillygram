@@ -175,19 +175,8 @@ enum ContentFilter {
         return !!activeReelVideo();
       }
 
-      function immersivePathSurface() {
-        return /^\\/stories\\//.test(location.pathname) || isReelPermalink();
-      }
-
       function isImmersiveSurface(lock) {
-        // Always evaluate the geometry detectors: they are the only callers
-        // that warm activeStorySurface / activeReelSurface, which keep
-        // immersive latched through the close animation (the surface stays
-        // fullscreen for a beat after the route reverts to the feed). The
-        // path front-run then ORs on top so entry flips to black instantly,
-        // before geometry settles.
-        const geometry = !!(storyViewerSurface() || reelViewerSurface());
-        return immersivePathSurface() || geometry;
+        return !!(storyViewerSurface() || reelViewerSurface());
       }
 
       function postPresentation(lock, immersive, reason) {
