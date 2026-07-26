@@ -1606,6 +1606,16 @@ enum ContentFilter {
       // Home header: center the Instagram logo and add a favorites star on
       // the left (plus/heart stay on the right where IG puts them). The star
       // opens the native favorites editor via the biFavEdit message.
+      function ensureViewportCover() {
+        const meta = document.querySelector('meta[name="viewport"]');
+        if (meta) {
+          let content = meta.getAttribute('content') || '';
+          if (content.indexOf('viewport-fit=cover') === -1) {
+            meta.setAttribute('content', content + ', viewport-fit=cover');
+          }
+        }
+      }
+
       function fixHomeHeader() {
         if (location.pathname !== '/' || !isTopFrame) return;
         const logo = document.querySelector('svg[aria-label="Instagram"]');
@@ -2100,6 +2110,7 @@ enum ContentFilter {
           upgradeDirectPreviews();
           fixDMShareCardCursor();
           fixHomeHeader();
+          ensureViewportCover();
           removeReservedNavSpace();
           updateCommentSheet();
           reportNavVisibility();
