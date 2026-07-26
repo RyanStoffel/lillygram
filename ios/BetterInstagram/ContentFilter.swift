@@ -38,6 +38,7 @@ enum ContentFilter {
         html.__bi_noscroll * { touch-action: none !important; }
         html.__bi_noscroll [role="dialog"]:not(:has(video)), html.__bi_noscroll [role="dialog"]:not(:has(video)) * { touch-action: auto !important; }
         a, [role="button"], [role="link"] { cursor: pointer; }
+        a, button, [role="button"], [role="link"], input, select, textarea { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
         #__bi_star_btn { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); z-index: 3; background: none; border: 0; padding: 8px; display: flex; align-items: center; }
         @keyframes __bi_rot { to { transform: rotate(360deg); } }
       `;
