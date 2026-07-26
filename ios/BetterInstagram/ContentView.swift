@@ -70,6 +70,16 @@ struct ContentView: View {
                 refreshOnboarding()
                 preloadSecondaryTabs()
             }
+
+            GeometryReader { geometry in
+                VStack(spacing: 0) {
+                    bridge.safeAreaBackground
+                        .frame(height: geometry.safeAreaInsets.top)
+                    Spacer(minLength: 0)
+                }
+                .ignoresSafeArea(edges: .top)
+            }
+            .allowsHitTesting(false)
         }
         .fullScreenCover(isPresented: $showOnboarding) {
             favoritesPicker(mode: .onboarding)
@@ -220,7 +230,7 @@ struct ContentView: View {
         Group {
             if createdTabs.contains(target) {
                 WebViewContainer(webView: store.webView(for: target))
-                    .ignoresSafeArea(edges: reduceTransparency ? [] : .all)
+                    .ignoresSafeArea(edges: reduceTransparency ? [] : .bottom)
             } else {
                 // Shown for the instant it takes to create+load the webview on
                 // this tab's first visit only; already-created tabs never see it.
