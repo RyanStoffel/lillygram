@@ -104,7 +104,7 @@ struct FavoritesPickerView: View {
             }
         }
         .padding(12)
-        .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 12))
+        .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: 12))
         .padding(.horizontal)
         .padding(.top, 20)
     }
@@ -234,7 +234,7 @@ struct FavoritesPickerView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(.quaternary.opacity(0.5), in: .capsule)
+            .background(Color(.tertiarySystemFill), in: .capsule)
         }
         .buttonStyle(.plain)
     }
