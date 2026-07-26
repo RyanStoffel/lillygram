@@ -27,6 +27,9 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
+            bridge.pageBackground
+                .ignoresSafeArea()
+
             TabView(selection: tabSelection) {
                 Tab(value: NavTarget.home) {
                     webContent(for: .home)
