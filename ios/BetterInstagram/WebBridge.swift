@@ -16,7 +16,7 @@ final class WebBridge: ObservableObject {
     @Published var isNavVisible: Bool = true
     @Published var avatarURL: URL?
     @Published var pageBackground: Color = Color(.systemBackground)
-    @Published var safeAreaBackground: Color = Color(.systemBackground)
+    @Published var safeAreaBackground: Color = .black
     /// Incremented when the injected star button in the web header is tapped;
     /// ContentView reacts by presenting the favorites editor sheet.
     @Published var favoritesEditRequests = 0
