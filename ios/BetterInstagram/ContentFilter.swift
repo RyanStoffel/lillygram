@@ -19,6 +19,8 @@ enum ContentFilter {
       const style = document.createElement('style');
       style.id = '__bi_filter_style';
       style.textContent = `
+        html, body { background-color: rgb(12, 16, 20) !important; }
+        section[role="dialog"], div[role="dialog"], section[role="region"] { background-color: rgb(12, 16, 20) !important; }
         a[href="/reels/"] { display: none !important; }
         a[href="/explore/"] { display: none !important; }
         svg[aria-label="Reels"] { display: none !important; }
@@ -1980,8 +1982,7 @@ enum ContentFilter {
 
       function reportBackgroundColor() {
         if (!isTopFrame) return;
-        if (/^\\/(stories|reels?)\\//.test(location.pathname) || isImmersiveSurface(shouldLockScroll())) return;
-        const bg = currentPageBackground();
+        const bg = currentPageBackground() || 'rgb(12, 16, 20)';
         if (!bg) return;
         if (window.__biLastBg !== bg) {
           window.__biLastBg = bg;
