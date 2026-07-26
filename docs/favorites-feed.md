@@ -107,6 +107,38 @@ as **either** `variant=home` or `variant=favorites`. Both use the same
   a session into this mode — which is why a code revert alone won't restore the
   splice path if IG has switched the home feed to Favorites server-side.
 
+## Failure is CLOSED (R1)
+
+Every step above can fail, and the failure mode used to be **open**: the 20 s
+splash timer flipped `favoritesFeedReady` unconditionally, the XHR hold released
+the held home request after 10 s, and the DOM author filter left unknown authors
+visible — so a failed harvest quietly presented Instagram's **algorithmic** feed
+and reported success. That is an R1 violation, not a degradation.
+
+The pipeline now fails closed at both layers:
+
+- **Web** (`reportFeedDegraded()`): the edge wait timing out, or a harvest
+  delivering 0 edges, sets `window.__biFeedDegraded` and posts `biFeedStuck`.
+  The held request is still released (holding it forever is just a permanent
+  spinner) — native is simply told *first*. While degraded, `filterArticle()`
+  also hides **unknown**-author articles: with no trustworthy allowlist left,
+  "leave unknown alone" stops being the safe default.
+- **Native** (`failFeedClosed()`): the harvest deadline expiring without a
+  rendered feed, a harvest returning 0 edges, or an unrecoverable home/harvest
+  webview all route into the existing `feedStuck` path — one automatic
+  recovery, then `FeedErrorView`. The splash is dropped (so the other three
+  tabs stay usable; R1 is a home-feed contract) while home stays blocked.
+
+## Harvest generations
+
+Selection commit, launch sync, retry, pull-to-refresh and watchdog recovery can
+each start a harvest while an earlier one is still in flight. `harvestGeneration`
+is a monotonic token captured at `harvestFavorites()` and carried through
+`harvestExtract` → `densifyHarvest` → `finishHarvest`; a completion whose
+generation is stale is discarded (`[BI-harvest] discarding stale harvest
+generation N`). Without it a slow earlier cycle could land *after* a newer one
+and splice the previous favorites set into the feed.
+
 ## Invariants (violate these and the feed breaks)
 
 The first two invariants are now **enforced in code** by `sanitizeFavEdges()`,
@@ -171,8 +203,9 @@ error/empty result falls back to the streamed-only harvest unchanged. Log:
 
 - Native: `WebViewStore.syncFavoritesToInstagram()`, `harvestFavorites()`,
   `harvestExtract()`, `deliverFavEdges()`, `didReloadHomeForFavorites`,
-  `cachedFavEdgesJSON`.
+  `cachedFavEdgesJSON`, `harvestGeneration`, `failFeedClosed()`.
 - Web (`ContentFilter.swift`): `harvestScript`, `installLazyRewrite()`,
+  `reportFeedDegraded()` / `window.__biFeedDegraded`,
   `rewriteFeedText()`, `sanitizeFavEdges()`, `spliceFavoriteEdges()`, `extractTimelineEdges()`,
   `edgeAuthors()`, `window.__biSetFavEdges`, `prefetchFavoriteEdges()`,
   `filterArticle()` / `articleAuthor()`, `favSet` / `favAuthors`.

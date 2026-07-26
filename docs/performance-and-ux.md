@@ -25,22 +25,40 @@ measurable standards and the implementation techniques to hit them. R4 is
 ## Techniques
 
 ### Launch & warmth (P1, P2, P8)
-- **Persistent, pre-created webviews.** `WebViewStore` builds all four tab
-  webviews once and keeps them warm for the process lifetime; tab switches never
-  reload. _[cite pending]_
+- **Persistent webviews, all preloaded during the launch splash (2026-07-21).**
+  `WebViewStore` still builds the home webview eagerly in `init()`, but
+  `ContentView.preloadSecondaryTabs()` now also immediately triggers creation
+  of search/direct/profile right on appear, instead of waiting for each tab's
+  first visit — using the launch splash's own dead time (already covering the
+  favorites harvest) to hide the extra work, so there's no visible load delay
+  the first time a user switches tabs. `store.webView(for:)` still does the
+  actual creation (`ensureWebView`), and `createdTabs` is marked for all four
+  up front so `webContent(for:)` never shows the loading placeholder in
+  practice. Once created, tab switches never reload — same warm-tab guarantee
+  as before, just front-loaded. _[cite pending]_
 - **Shared data store + content controller.** One `WKWebsiteDataStore.default()`
   and one `WKUserContentController` across tabs → shared cookies/session and a
   single script install; secondary tabs can preload right after login. _[cite pending]_
-- **Opaque backgrounds matched to page.** `isOpaque = false` +
-  `backgroundColor` set from the reported page background (`biBg`, black on
-  `/stories/`) to avoid white flashes during load/navigation. _[cite pending]_
+- **Separate base and immersive backgrounds.** `isOpaque = false` + each
+  webview's Instagram-reported base color (`biBg`) avoids white flashes without
+  turning Direct conversations black. One non-interactive native painter above
+  the `TabView` owns the status-bar safe area, avoiding the tab container's
+  default black fill. `biPresentation` atomically applies a temporary black
+  override only for Stories and confirmed reel viewers, then restores the cached
+  base color on close. Routes and navigation requests do not speculatively
+  change color: the userscript snapshots pre-route media geometry and publishes
+  immersive state only when a new viewer surface mounts or an existing element
+  becomes fullscreen. It holds that state through the close animation until the
+  surface disappears. This avoids Instagram's intermediate navigation states,
+  which caused black-base-black flicker. Inactive preloaded tabs cannot overwrite
+  active chrome, and all safe-area changes disable animation. _[cite pending]_
 - **Two splashes to mask feed-assembly work.** Both fire *instantly* (identity
   insertion, fade-out only) and drop on `biFavReady` (favorites rendered) with a
   ~20 s safety fallback so neither can stick. `LaunchSplashView` is the branded
-  cold-start screen (Instagram-style wordmark + "from Meta") covering the initial
-  harvest + home reload. `ResaveSplashView` (star + "Updating your favorites…")
-  covers the re-harvest + reload after the user re-saves favorites, so the swap
-  never happens on-screen. `ContentView.activeSplash` picks between them:
+  cold-start screen (Lillygram icon + attribution) covering the initial harvest
+  and home reload. `ResaveSplashView` uses the same identity with an "Updating
+  your favorites…" status while re-harvest runs, so the swap never happens
+  on-screen. `ContentView.activeSplash` picks between them:
   launch before the feed has ever been ready, resave for any later gap (only
   produced by `applyFavoritesSelection`).
 
@@ -69,8 +87,33 @@ measurable standards and the implementation techniques to hit them. R4 is
 - **Gesture fidelity.** `allowsBackForwardNavigationGestures = true`; the DM
   reel lock disables scroll surgically (only the reel container) so the rest of
   the app keeps native scrolling.
+- **Single-tap DM media.** Instagram's URL-less shared-reel card internally
+  requires arm-then-activate taps. The userscript retries the upgraded element
+  after the first stationary media-card touch so one physical tap opens it;
+  scrolling and non-media controls are excluded.
+- **Comments presentation.** Opening a post's comments hides the native tab bar
+  for both dialog and mobile full-page variants. Detection is throttled with the
+  normal DOM fallback pass and uses a short close confirmation window so React
+  rerenders cannot flicker the native bar. The full-page back arrow cancels its
+  link navigation during capture while allowing Instagram's close handler to
+  continue. Closing comments restores the tab bar with the native toolbar
+  transition.
 - **No debug leakage in UI.** `[BI-DEBUG]` logging is console-only; no on-screen
   markers.
+
+### Current roadmap
+
+1. **Native accessibility and motion:** explicit tab labels, meaningful loading
+   and error semantics, real-Favorites disclosure, and Reduce Motion support.
+2. **Adaptive shell geometry:** replace unconditional bottom clearance with
+   measured clearance that follows native tab-bar visibility without reloading a
+   webview.
+3. **Measured launch polish:** add debug signposts and profile cold launch, warm
+   tab switches, memory, and feed scrolling before changing preload behavior.
+4. **Visible degraded states:** surface persistent favorites-sync degradation
+   without ever falling back to algorithmic feed content.
+5. **Targeted DOM performance:** profile first, then split broad fallback work by
+   route while retaining immediate feed, search, comments, and DM-reel defenses.
 
 ## Anti-goals / traps
 

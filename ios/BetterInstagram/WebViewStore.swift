@@ -1,6 +1,36 @@
 import SwiftUI
 import WebKit
 
+/// `WKUserContentController` and `WKHTTPCookieStore` both retain what you
+/// register with them, and `WebViewStore` retains the controller — registering
+/// `self` directly makes the store immortal. These forward weakly instead.
+private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
+    private weak var target: WKScriptMessageHandler?
+
+    init(_ target: WKScriptMessageHandler) {
+        self.target = target
+    }
+
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        target?.userContentController(userContentController, didReceive: message)
+    }
+}
+
+private final class WeakCookieStoreObserver: NSObject, WKHTTPCookieStoreObserver {
+    private weak var target: WKHTTPCookieStoreObserver?
+
+    init(_ target: WKHTTPCookieStoreObserver) {
+        self.target = target
+    }
+
+    func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
+        target?.cookiesDidChange?(in: cookieStore)
+    }
+}
+
 final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKHTTPCookieStoreObserver {
     @Published private(set) var isLoggedIn = false
     /// True once the home tab has actually rendered the favorites feed. Drives
@@ -10,25 +40,92 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     /// feed never rendered) even after an automatic recovery reload — drives a
     /// native retry screen so the user never faces a permanent spinner.
     @Published private(set) var feedStuck = false
+    /// True while a pull-to-refresh is re-harvesting/reloading the home feed —
+    /// drives the launch splash over the refresh so the rebuild is hidden.
+    @Published private(set) var refreshingViaPull = false
+    /// True when the last favorites sync attempted writes but couldn't verify
+    /// them (`confirmed < add` — most likely a rotated GraphQL `doc_id`, see
+    /// known-issues.md #5 "Proposed: doc_id resilience"). Persisted so the
+    /// signal survives past the current console/session instead of being a
+    /// log line a human has to happen to notice; flips back false the next
+    /// time a sync fully confirms. No UI reads this yet.
+    @Published private(set) var favoritesSyncDegraded = false
 
     private var webViews: [NavTarget: WKWebView] = [:]
     private var navVisibleCache: [ObjectIdentifier: Bool] = [:]
+    private var pageBackgroundCache: [ObjectIdentifier: Color] = [:]
+    private var immersiveCache: [ObjectIdentifier: Bool] = [:]
+    private var scrollLockedCache: [ObjectIdentifier: Bool] = [:]
     private let bridge: WebBridge
     private let favorites: FavoritesStore
     private let userContentController = WKUserContentController()
+    // Shared config gives every persistent tab the same cookies/session and
+    // injected scripts as the eager home webview.
+    private let webViewConfiguration = WKWebViewConfiguration()
     private var activeTarget: NavTarget = .home
     private var profileResolved = false
+    // The user's own profile href, once detected from the nav row (fires from
+    // whichever tab is loaded first, almost always home). Kept even if the
+    // profile webview doesn't exist yet, so its eventual lazy creation can load
+    // the real profile directly instead of the plain home URL.
+    private var resolvedProfileURLString: String?
     private var lastSessionID = ""
+    private var lastUserID = ""
+    // The cookie store retains its observers, but the proxy's lifetime is this
+    // store's business, not WebKit's.
+    private var cookieObserver: WeakCookieStoreObserver?
     // Hidden webview that navigates to /?variant=favorites (the only way IG
     // streams the favorites feed) so its edges can be harvested and spliced into
     // the visible home tab. Isolated controller so ContentFilter doesn't run in it.
     private var favHarvestWebView: WKWebView?
     private let favHarvestController = WKUserContentController()
     private var cachedFavEdgesJSON: String?
+    // The exact edges JSON armed for the home tab's upcoming/most recent
+    // *initial* load, loaded from UserDefaults at init before the home
+    // webview's first .load(). Only ever set from disk at launch, and only
+    // ever compared against — never trusted blindly, see finishHarvest().
+    private var preloadedFromDiskJSON: String?
+    private static let favEdgesCacheKey = "biCachedFavEdgesJSON"
+    private static let favoritesSyncDegradedKey = "biFavoritesSyncDegraded"
+    // Usernames this app itself most recently confirmed as added to the
+    // user's real Instagram Favorites. Diffed against the current picks on
+    // every sync so an account deselected in-app gets unfavorited on the real
+    // account too — a local-history-based remove-side reconcile that doesn't
+    // need the (blocked) bulk favorites-list-read endpoint. See
+    // known-issues.md #5.
+    private static let syncedFavoritesKey = "biSyncedFavoriteUsernames"
     private var didReloadHomeForFavorites = false
     private var didRunLaunchSync = false
     private var feedRecoveryAttempts = 0
+    // Monotonic harvest token. Selection commit, launch sync, retry,
+    // pull-to-refresh and watchdog recovery can all start a harvest while an
+    // earlier one is still in flight; every async stage carries the generation
+    // it started under so a slow, stale cycle can never overwrite a newer
+    // one's edges (which would splice the previous favorites set into the feed).
+    private var harvestGeneration = 0
+    // Bounded recovery budgets for WebKit content-process termination and hard
+    // navigation failures. Tab budgets are per webview; the harvest webview
+    // gets its own because recovery destroys and recreates it.
+    private var recoveryAttempts: [ObjectIdentifier: Int] = [:]
+    private var pendingScrollRestore: [ObjectIdentifier: CGPoint] = [:]
+    private var harvestRecoveryAttempts = 0
+    private static let maxRecoveryAttempts = 2
+    private static let messageHandlerNames = [
+        "biNav", "biAvatar", "biProfile", "biBg", "biPresentation",
+        "biFavEdit", "biFavReady", "biFeedStuck", "biLog"
+    ]
+    #if DEBUG
+    private var didRunStoryTimingProbe = false
+    #endif
+    private weak var homeRefreshControl: UIRefreshControl?
+    private var refreshInFlight = false
     private let blockedExactPaths: Set<String> = ["/reels", "/reels/", "/explore", "/explore/"]
+    // Clearance reserved at the bottom of every tab's scroll content so the
+    // last item never ends up hidden behind the floating tab bar (see
+    // makeWebView). Empirically chosen in-simulator, not derived from a
+    // system constant — the floating tab bar's own size isn't exposed to a
+    // sibling WKWebView.
+    private static let bottomTabBarClearance: CGFloat = 100
 
     private let startURLs: [NavTarget: String] = [
         .home: "https://www.instagram.com/",
@@ -53,66 +150,175 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         self.favorites = favorites
         super.init()
 
+        // Warm-launch optimization: if a prior session's harvest left valid
+        // edges on disk, arm them as the preload BEFORE the home webview's
+        // first load below, so the document-start SSR splice can render
+        // favorites on the very first paint instead of only after the
+        // post-harvest reload. This is never trusted on faith — finishHarvest()
+        // only skips the reload once the live harvest that follows proves
+        // (by exact match) that this preload was already correct.
+        if favorites.isFilterEnabled,
+           let persisted = UserDefaults.standard.string(forKey: Self.favEdgesCacheKey),
+           harvestCount(persisted) > 0 {
+            cachedFavEdgesJSON = persisted
+            preloadedFromDiskJSON = persisted
+        }
+        favoritesSyncDegraded = UserDefaults.standard.bool(forKey: Self.favoritesSyncDegradedKey)
+
+        // Defense-in-depth: compile the static content-rule-list (Explore/Reels
+        // nav chrome — see BlockingRules.json) as early as possible so it's in
+        // effect before/at first paint on most launches. This is additive only:
+        // compilation is inherently async, so the very first page load of a
+        // cold launch may land before it's ready, and the equivalent JS/CSS
+        // hides in ContentFilter.swift stay completely unchanged as the
+        // always-on primary mechanism. Any failure here (missing resource,
+        // malformed JSON, simulator quirk) is caught and logged; the app
+        // continues exactly as it does today.
+        compileContentRuleList()
+
         installUserScripts()
-        userContentController.add(self, name: "biNav")
-        userContentController.add(self, name: "biAvatar")
-        userContentController.add(self, name: "biProfile")
-        userContentController.add(self, name: "biBg")
-        userContentController.add(self, name: "biScroll")
-        userContentController.add(self, name: "biFavEdit")
-        userContentController.add(self, name: "biFavReady")
-        userContentController.add(self, name: "biFeedStuck")
-        userContentController.add(self, name: "biLog")
-
-        let dataStore = WKWebsiteDataStore.default()
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = dataStore
-        configuration.userContentController = userContentController
-        configuration.allowsInlineMediaPlayback = true
-        configuration.mediaTypesRequiringUserActionForPlayback = []
-
-        for target in [NavTarget.home, .search, .direct, .profile] {
-            let webView = WKWebView(frame: .zero, configuration: configuration)
-            webView.scrollView.contentInsetAdjustmentBehavior = .never
-            webView.isOpaque = false
-            webView.backgroundColor = .systemBackground
-            webView.scrollView.backgroundColor = .systemBackground
-            webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) " +
-                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
-            webView.navigationDelegate = self
-            webView.uiDelegate = self
-            webView.allowsBackForwardNavigationGestures = true
-            webView.removeInputAccessoryView()
-            let startURL = target == .home ? homeURLString : startURLs[target]!
-            webView.load(URLRequest(url: URL(string: startURL)!))
-            webViews[target] = webView
+        let messageHandler = WeakScriptMessageHandler(self)
+        for name in Self.messageHandlerNames {
+            userContentController.add(messageHandler, name: name)
         }
 
-        dataStore.httpCookieStore.add(self)
+        let dataStore = WKWebsiteDataStore.default()
+        webViewConfiguration.websiteDataStore = dataStore
+        webViewConfiguration.userContentController = userContentController
+        webViewConfiguration.allowsInlineMediaPlayback = true
+        webViewConfiguration.mediaTypesRequiringUserActionForPlayback = []
+
+        // Only the home tab is created eagerly: it's needed immediately for the
+        // launch splash + favorites harvest + first paint. Search/direct/profile
+        // are created lazily on first visit (see ensureWebView(for:)) so launch
+        // doesn't pay for 3 webviews the user may never open this session.
+        _ = makeWebView(for: .home)
+
+        let observer = WeakCookieStoreObserver(self)
+        cookieObserver = observer
+        dataStore.httpCookieStore.add(observer)
         dataStore.httpCookieStore.getAllCookies { [weak self] cookies in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.lastSessionID = Self.sessionID(from: cookies)
+                self.lastUserID = Self.userID(from: cookies)
                 self.isLoggedIn = !self.lastSessionID.isEmpty
                 if self.isLoggedIn { self.harvestFavorites() }
             }
         }
     }
 
+    deinit {
+        for name in Self.messageHandlerNames {
+            userContentController.removeScriptMessageHandler(forName: name)
+        }
+    }
+
+    /// Creates target's webview on first call, then returns the same persisted
+    /// instance every time after — same session/scroll-position warmth as the
+    /// eager home tab, just deferred until the tab is actually needed.
+    @discardableResult
+    private func makeWebView(for target: NavTarget) -> WKWebView {
+        let webView = WKWebView(frame: .zero, configuration: webViewConfiguration)
+        #if DEBUG
+        if #available(iOS 16.4, *) {
+            webView.isInspectable = true
+        }
+        #endif
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        // UIScrollView delays the first touch on its content by default, to
+        // give itself a chance to claim the gesture as a scroll before
+        // conceding it to the content underneath — this is the classic cause
+        // of "have to tap twice" on interactive elements inside a WKWebView
+        // (confirmed here via a diagnostic: taps on a DM reel-share card were
+        // reaching the page's own click handler cleanly and un-prevented, so
+        // nothing in the injected script was at fault). Disabling the delay
+        // makes taps register immediately, matching native app feel.
+        webView.scrollView.delaysContentTouches = false
+        // The webview's frame deliberately ignores the bottom safe area (see
+        // ContentView.webContent(for:)) so its content shows through behind
+        // the translucent floating tab bar — but that also means WebKit has
+        // zero built-in awareness the tab bar exists, and scrolls content all
+        // the way to the physical bottom edge. Reserve real scroll room so
+        // the last item is never left underneath the tab bar.
+        webView.scrollView.contentInset.bottom = Self.bottomTabBarClearance
+        webView.isOpaque = false
+        webView.backgroundColor = .systemBackground
+        webView.scrollView.backgroundColor = .systemBackground
+        webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) " +
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        webView.allowsBackForwardNavigationGestures = true
+        webView.removeInputAccessoryView()
+        if target == .home {
+            let refresh = UIRefreshControl()
+            refresh.tintColor = UIColor.white.withAlphaComponent(0.7)
+            refresh.addTarget(self, action: #selector(handlePullToRefresh), for: .valueChanged)
+            webView.scrollView.refreshControl = refresh
+            webView.scrollView.alwaysBounceVertical = true
+            homeRefreshControl = refresh
+        }
+        // Profile normally starts at the plain root and gets JS-navigated to the
+        // real profile once resolved (see setActive). If the href was already
+        // resolved from another tab before this webview existed, load it
+        // directly and skip that extra hop.
+        let startURL: String
+        if target == .profile, let resolved = resolvedProfileURLString {
+            startURL = resolved
+        } else {
+            startURL = target == .home ? homeURLString : (startURLs[target] ?? homeURLString)
+        }
+        if let url = URL(string: startURL) ?? URL(string: homeURLString) {
+            webView.load(URLRequest(url: url))
+        }
+        webViews[target] = webView
+        return webView
+    }
+
+    private func ensureWebView(for target: NavTarget) -> WKWebView {
+        webViews[target] ?? makeWebView(for: target)
+    }
+
     func webView(for target: NavTarget) -> WKWebView {
-        webViews[target]!
+        ensureWebView(for: target)
     }
 
     func setActive(_ target: NavTarget) {
         activeTarget = target
-        if let webView = webViews[target] {
-            bridge.isNavVisible = navVisibleCache[ObjectIdentifier(webView)] ?? true
-        }
+        let webView = ensureWebView(for: target)
+        publishCachedPresentation(for: webView)
         if target == .profile && !profileResolved {
-            webViews[.profile]?.evaluateJavaScript(
+            webView.evaluateJavaScript(
                 "window.__biNavigate('profile')",
                 completionHandler: nil
             )
+        }
+    }
+
+    private func publishCachedPresentation(for webView: WKWebView) {
+        let identifier = ObjectIdentifier(webView)
+        let base = pageBackgroundCache[identifier] ?? Color(.systemBackground)
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            bridge.isNavVisible = navVisibleCache[identifier] ?? true
+            bridge.pageBackground = base
+            bridge.safeAreaBackground = immersiveCache[identifier] == true ? .black : base
+        }
+    }
+
+    private func setPresentation(locked: Bool, immersive: Bool, for webView: WKWebView) {
+        let identifier = ObjectIdentifier(webView)
+        immersiveCache[identifier] = immersive
+        scrollLockedCache[identifier] = locked
+        webView.scrollView.isScrollEnabled = !locked
+        guard webView === webViews[activeTarget] else { return }
+        let base = pageBackgroundCache[identifier] ?? Color(.systemBackground)
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            bridge.safeAreaBackground = immersive ? .black : base
         }
     }
 
@@ -143,6 +349,36 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         )
     }
 
+    /// Compiles `BlockingRules.json` (static, always-true nav-chrome hides —
+    /// Explore link, Reels link/icon) into a `WKContentRuleList` and adds it to
+    /// the shared `userContentController`, so WebKit's networking/rendering
+    /// layer can apply it off the main thread before the page's own JS/CSS
+    /// runs. Purely additive: the equivalent CSS hides in `ContentFilter.swift`
+    /// remain the primary, unconditional mechanism. Any failure (resource
+    /// missing, malformed JSON, store error) is logged and swallowed — the app
+    /// works exactly as before, just without this extra layer.
+    private func compileContentRuleList() {
+        guard let url = Bundle.main.url(forResource: "BlockingRules", withExtension: "json"),
+              let json = try? String(contentsOf: url, encoding: .utf8) else {
+            print("[BI-DEBUG] content rule list: BlockingRules.json not found/unreadable, skipping")
+            return
+        }
+        WKContentRuleListStore.default().compileContentRuleList(
+            forIdentifier: "BIBlockingRules",
+            encodedContentRuleList: json
+        ) { [weak self] list, error in
+            guard let self else { return }
+            if let error {
+                print("[BI-DEBUG] content rule list compile failed, skipping: \(error)")
+                return
+            }
+            guard let list else { return }
+            DispatchQueue.main.async {
+                self.userContentController.add(list)
+            }
+        }
+    }
+
     /// Call after the favorites selection changes. Reinstalls the preamble
     /// for future page loads, pushes the new list into live pages, and
     /// reloads home so posts already delivered by filtered-out authors drop.
@@ -165,9 +401,13 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             // reload home (the harvested edges get pushed in on didFinish).
             cachedFavEdgesJSON = nil
             didReloadHomeForFavorites = false
+            // This explicit reload is not the disk-warm-start case (the picks
+            // just changed) — never let finishHarvest's no-op check skip it.
+            preloadedFromDiskJSON = nil
             favoritesFeedReady = false
             feedStuck = false
             feedRecoveryAttempts = 0
+            harvestRecoveryAttempts = 0
             harvestFavorites()
             if let url = URL(string: homeURLString) {
                 webViews[.home]?.load(URLRequest(url: url))
@@ -240,6 +480,33 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             const s = state[r.id];
             return !s || (s.following && !s.fav);
         }).map(function(r) { return r.id; });
+        // Remove-side reconcile: an account this app itself previously
+        // confirmed as added to Favorites, but that's no longer one of the
+        // current picks, should get unfavorited on the real account too —
+        // otherwise its posts keep streaming into the favorites feed forever
+        // even after being deselected in-app. This can't enumerate Instagram's
+        // real Favorites list (the bulk read endpoints reject the web UA), so
+        // it only ever removes what OUR OWN prior sync added (tracked in
+        // `previouslySynced`) — it will never touch a favorite the user set up
+        // directly in the real Instagram app outside of this one.
+        const currentLower = usernames.map(function(n) { return String(n).toLowerCase(); });
+        const removedNames = (previouslySynced || []).filter(function(n) {
+            return currentLower.indexOf(String(n).toLowerCase()) === -1;
+        });
+        const removedResolved = [];
+        for (const name of removedNames) {
+            try {
+                const r = await fetch('/api/v1/users/web_profile_info/?username=' +
+                    encodeURIComponent(name), {
+                    credentials: 'include', headers: { 'X-IG-App-ID': APP_ID }
+                });
+                if (!r.ok) { continue; }
+                const j = await r.json();
+                const id = j && j.data && j.data.user && j.data.user.id;
+                if (id) { removedResolved.push({ name: name, id: String(id) }); }
+            } catch (e) {}
+        }
+        const remove = removedResolved.map(function(r) { return r.id; });
         const hdrs = {
             'X-IG-App-ID': APP_ID,
             'X-CSRFToken': csrf,
@@ -251,7 +518,8 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         // usePolarisUpdateFeedFavoritesUpdatableFavoriteMutation, a single call
         // that takes data.add[]/remove[]. Goes to /api/graphql (NOT the UA-gated
         // api/v1 endpoints). set_besties writes CLOSE FRIENDS, not favorites, so
-        // it is only used for the one-time CF cleanup below.
+        // it is only used for the one-time CF cleanup below. The unfavorite
+        // side is the mirror-image mutation, usePolarisUpdateFeedFavoritesUpdatableUnfavoriteMutation.
         // Anti-CSRF tokens for the mutation are scraped from the page HTML.
         const html = document.documentElement.innerHTML;
         function tok(re) { const m = html.match(re); return m ? m[1] : ''; }
@@ -262,35 +530,46 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             (document.cookie.match(/ds_user_id=([0-9]+)/) || [])[1] || '';
         const FAV_DOC_ID = '27127248780249605';
         const FAV_FN = 'usePolarisUpdateFeedFavoritesUpdatableFavoriteMutation';
-        let wrote = 0;
-        if (add.length && dtsg) {
+        const UNFAV_DOC_ID = '27275847402052259';
+        const UNFAV_FN = 'usePolarisUpdateFeedFavoritesUpdatableUnfavoriteMutation';
+        async function runFavMutation(addIds, removeIds, docId, friendlyName) {
+            if (!dtsg) { return { ok: false, reason: 'no fb_dtsg token' }; }
             try {
                 const body = new URLSearchParams({
                     av: av, __a: '1', __comet_req: '7',
                     fb_dtsg: dtsg, lsd: lsd,
                     fb_api_caller_class: 'RelayModern',
-                    fb_api_req_friendly_name: FAV_FN,
-                    variables: JSON.stringify({ data: { add: add, remove: [], source: 'favorites_management' } }),
+                    fb_api_req_friendly_name: friendlyName,
+                    variables: JSON.stringify({ data: { add: addIds, remove: removeIds, source: 'favorites_management' } }),
                     server_timestamps: 'true',
-                    doc_id: FAV_DOC_ID
+                    doc_id: docId
                 });
                 const r = await fetch('/api/graphql', {
                     method: 'POST', credentials: 'include',
                     headers: {
                         'X-CSRFToken': csrf, 'X-IG-App-ID': APP_ID, 'X-FB-LSD': lsd,
-                        'X-FB-Friendly-Name': FAV_FN,
+                        'X-FB-Friendly-Name': friendlyName,
                         'Content-Type': 'application/x-www-form-urlencoded'
                     },
                     body: body.toString()
                 });
                 const t = await r.text();
-                if (r.ok && t.indexOf('"errors"') === -1) { wrote = add.length; }
-                else { log('favmut status=' + r.status + ' body=' + t.slice(0, 200)); }
-            } catch (e) { log('favmut err ' + e); }
-        } else if (add.length) {
-            log('favmut SKIPPED: no fb_dtsg token (dtsg=' + (dtsg ? 'y' : 'n') + ' lsd=' + (lsd ? 'y' : 'n') + ')');
+                if (r.ok && t.indexOf('"errors"') === -1) { return { ok: true }; }
+                return { ok: false, reason: 'status=' + r.status + ' body=' + t.slice(0, 200) };
+            } catch (e) { return { ok: false, reason: String(e) }; }
         }
-        // Verify the writes took: re-check the favorites flag for every add.
+        let wrote = 0;
+        if (add.length) {
+            const res = await runFavMutation(add, [], FAV_DOC_ID, FAV_FN);
+            if (res.ok) { wrote = add.length; } else { log('favmut ' + res.reason); }
+        }
+        let removedWrote = 0;
+        if (remove.length) {
+            const res = await runFavMutation([], remove, UNFAV_DOC_ID, UNFAV_FN);
+            if (res.ok) { removedWrote = remove.length; } else { log('unfavmut ' + res.reason); }
+        }
+        // Verify the writes took: re-check the favorites flag for every add
+        // and every remove.
         let confirmed = 0;
         for (const id of add) {
             try {
@@ -300,6 +579,17 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 if (!r.ok) { continue; }
                 const j = await r.json();
                 if (favFlag(j)) { confirmed++; }
+            } catch (e) {}
+        }
+        let removedConfirmed = 0;
+        for (const id of remove) {
+            try {
+                const r = await fetch('/api/v1/friendships/show/' + id + '/', {
+                    credentials: 'include', headers: { 'X-IG-App-ID': APP_ID }
+                });
+                if (!r.ok) { continue; }
+                const j = await r.json();
+                if (!favFlag(j)) { removedConfirmed++; }
             } catch (e) {}
         }
         // One-time cleanup: the old set_besties path polluted the user's CLOSE
@@ -329,18 +619,26 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         const followNote = notFollowed.length ?
             ' NOT-FOLLOWED(cannot favorite): ' + notFollowed.join(',') : '';
         const cleanNote = cleaned >= 0 ? ' cleanedCF=' + cleaned : '';
-        if (!add.length) {
+        const removeNote = remove.length ?
+            ' remove=' + remove.length + ' removedOk=' + removedWrote +
+            ' removedConfirmed=' + removedConfirmed : '';
+        if (!add.length && !remove.length) {
             return 'already in sync (' + ids.length + ' picks)' + followNote + cleanNote;
         }
         return 'wrote favorites add=' + add.length + ' ok=' + wrote +
             ' confirmed=' + confirmed + ' picks=' + ids.length + '/' + usernames.length +
-            followNote + cleanNote;
+            removeNote + followNote + cleanNote;
         """
         let cleanupNeeded = !UserDefaults.standard.bool(forKey: "biDidCleanBesties")
+        let previouslySynced = (UserDefaults.standard.array(forKey: Self.syncedFavoritesKey) as? [String]) ?? []
         let result: String = await withCheckedContinuation { continuation in
             webView.callAsyncJavaScript(
                 script,
-                arguments: ["usernames": usernames, "cleanupBesties": cleanupNeeded],
+                arguments: [
+                    "usernames": usernames,
+                    "cleanupBesties": cleanupNeeded,
+                    "previouslySynced": previouslySynced
+                ],
                 in: nil,
                 in: .page
             ) { r in
@@ -354,7 +652,46 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         if result.contains("cleanedCF=") {
             UserDefaults.standard.set(true, forKey: "biDidCleanBesties")
         }
+        // The current picks are now the reconcile baseline going forward,
+        // whether or not every individual add/remove verified — this process
+        // is self-healing once per launch (see didFinish), so a partial
+        // failure converges on a later run rather than needing to be exact
+        // here. Only skip updating the baseline on a hard failure (no ids
+        // resolved / a thrown error), where we learned nothing new.
+        if !result.hasPrefix("error:") && result != "no ids resolved" {
+            UserDefaults.standard.set(usernames, forKey: Self.syncedFavoritesKey)
+        }
+        updateFavoritesSyncHealth(result)
         return result
+    }
+
+    /// Parses `add=`/`confirmed=` out of a `syncFavoritesToInstagram()` result
+    /// summary and tracks whether writes are going through. `confirmed < add`
+    /// most likely means a rotated GraphQL doc_id (see known-issues.md #5,
+    /// "Proposed: doc_id resilience") — this only makes that failure a
+    /// persisted, named signal instead of a console line a human has to
+    /// happen to notice; it does not change sync behavior in any way.
+    /// "already in sync" / "skipped" / "no ids resolved" / "error: ..."
+    /// results carry no add/confirmed counts (no write was attempted) and are
+    /// intentionally left alone either way.
+    @MainActor
+    private func updateFavoritesSyncHealth(_ result: String) {
+        func intAfter(_ label: String) -> Int? {
+            guard let range = result.range(of: label) else { return nil }
+            let digits = result[range.upperBound...].prefix { $0.isNumber }
+            return digits.isEmpty ? nil : Int(digits)
+        }
+        guard let add = intAfter("add="), let confirmed = intAfter("confirmed=") else { return }
+        let degraded = add > 0 && confirmed < add
+        guard degraded != favoritesSyncDegraded else { return }
+        favoritesSyncDegraded = degraded
+        UserDefaults.standard.set(degraded, forKey: Self.favoritesSyncDegradedKey)
+        if degraded {
+            print("[BI-sync] DEGRADED: confirmed \(confirmed)/\(add) favorites writes verified — " +
+                "doc_id likely rotated; recapture via devtools (see docs/known-issues.md #5)")
+        } else {
+            print("[BI-sync] favorites sync healthy again (confirmed=\(confirmed)/\(add))")
+        }
     }
 
     // MARK: - Favorites harvest
@@ -364,6 +701,8 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     /// extracted and pushed into the visible home tab.
     func harvestFavorites() {
         guard favorites.isFilterEnabled, !lastSessionID.isEmpty else { return }
+        harvestGeneration += 1
+        let generation = harvestGeneration
         let webView: WKWebView
         if let existing = favHarvestWebView {
             webView = existing
@@ -383,35 +722,44 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             favHarvestWebView = created
             webView = created
         }
-        print("[BI-harvest] loading /?variant=favorites")
+        print("[BI-harvest] loading /?variant=favorites (generation \(generation))")
         webView.load(URLRequest(url: URL(string: "https://www.instagram.com/?variant=favorites")!))
-        // Safety net: never let the launch splash stick if the feed never signals.
+        // Safety net. This used to unconditionally flip favoritesFeedReady,
+        // which dropped the launch splash onto whatever Instagram had rendered
+        // — i.e. the algorithmic feed — and reported success (R1 violation).
+        // It now fails CLOSED: if this generation still hasn't produced a
+        // rendered favorites feed by the deadline, the degraded path runs.
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
-            self?.favoritesFeedReady = true
+            guard let self, generation == self.harvestGeneration, !self.favoritesFeedReady else { return }
+            self.failFeedClosed("no favorites feed rendered within 20s of harvest \(generation)")
         }
     }
 
-    private func harvestExtract() {
-        guard let webView = favHarvestWebView else { return }
+    private func harvestExtract(generation: Int) {
+        guard favHarvestWebView != nil else { return }
         // Small settle, then the harvest script itself scrolls to paginate.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-            guard let self, let webView = self.favHarvestWebView else { return }
+            guard let self, generation == self.harvestGeneration,
+                  let webView = self.favHarvestWebView else { return }
             webView.callAsyncJavaScript(
                 ContentFilter.harvestScript,
                 arguments: [:],
                 in: nil,
                 in: .page
-            ) { result in
+            ) { [weak self] result in
+                guard let self else { return }
                 switch result {
                 case .success(let value):
                     guard let json = value as? String else {
                         print("[BI-harvest] no string returned")
+                        self.finishHarvest("{}", generation: generation)
                         return
                     }
                     self.logHarvestSummary(json)
-                    self.densifyHarvest(json)
+                    self.densifyHarvest(json, generation: generation)
                 case .failure(let error):
                     print("[BI-harvest] extract error: \(error.localizedDescription)")
+                    self.finishHarvest("{}", generation: generation)
                 }
             }
         }
@@ -420,9 +768,9 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     /// Append each favorite's recent profile media to the streamed edges (the
     /// density pass, see ContentFilter.densityScript). Fail-safe: any error or
     /// empty result falls back to the streamed-only harvest unchanged.
-    private func densifyHarvest(_ json: String) {
+    private func densifyHarvest(_ json: String, generation: Int) {
         guard harvestCount(json) > 0, let webView = favHarvestWebView else {
-            finishHarvest(json)
+            finishHarvest(json, generation: generation)
             return
         }
         let usernames = favorites.favorites.map(\.username)
@@ -431,39 +779,68 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             arguments: ["harvestJson": json, "usernames": usernames],
             in: nil,
             in: .page
-        ) { result in
+        ) { [weak self] result in
+            guard let self else { return }
             switch result {
             case .success(let value):
                 if let augmented = value as? String, self.harvestCount(augmented) >= self.harvestCount(json) {
                     print("[BI-density] appended \(self.harvestCount(augmented) - self.harvestCount(json)) profile posts"
                         + " fetch=\(self.harvestFetchStats(augmented))")
-                    self.finishHarvest(augmented)
+                    self.finishHarvest(augmented, generation: generation)
                 } else {
                     print("[BI-density] no augmentation; using streamed edges only")
-                    self.finishHarvest(json)
+                    self.finishHarvest(json, generation: generation)
                 }
             case .failure(let error):
                 print("[BI-density] error: \(error.localizedDescription); using streamed edges only")
-                self.finishHarvest(json)
+                self.finishHarvest(json, generation: generation)
             }
         }
     }
 
-    private func finishHarvest(_ json: String) {
+    private func finishHarvest(_ json: String, generation: Int) {
+        // A newer harvest has started since this one began (selection commit,
+        // retry, pull-to-refresh, watchdog recovery). Its edges are the current
+        // truth; completing this one would splice a stale favorites set.
+        guard generation == harvestGeneration else {
+            print("[BI-harvest] discarding stale harvest generation \(generation) (current \(harvestGeneration))")
+            return
+        }
+        guard harvestCount(json) > 0 else {
+            failFeedClosed("harvest \(generation) returned 0 favorite edges")
+            return
+        }
+        harvestRecoveryAttempts = 0
+        // Proven (not assumed) no-op check: only true when a disk-preloaded
+        // cache was armed before the home tab's current/most recent initial
+        // load AND this live harvest returned byte-identical edges — i.e. the
+        // already-rendered SSR splice used exactly this data, so reloading
+        // would repaint the same thing. Any difference (account switch,
+        // changed picks, new posts since last launch) falls through to the
+        // normal reload below.
+        let preloadAlreadyCorrect = preloadedFromDiskJSON != nil && json == preloadedFromDiskJSON
+
         cachedFavEdgesJSON = json
         deliverFavEdges()
         // Refresh the preamble so window.__biFavEdgesPreload carries the latest
-        // edges on any future page load (the document-start SSR splice reads it).
-        if harvestCount(json) > 0 {
-            installUserScripts()
-        }
+        // edges on any future page load (the document-start SSR splice reads it),
+        // and persist to disk so the *next* launch can arm this same warm-start
+        // preload before its first load.
+        installUserScripts()
+        UserDefaults.standard.set(json, forKey: Self.favEdgesCacheKey)
         // After the first successful harvest, reload home once so the
         // now-cached favorites splice lands deterministically (no
-        // cold-start race).
-        if harvestCount(json) > 0 && !didReloadHomeForFavorites {
+        // cold-start race) — unless the disk-preloaded first paint already
+        // proved itself correct above, in which case reloading would be a
+        // pure no-op and is skipped.
+        if !didReloadHomeForFavorites {
             didReloadHomeForFavorites = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                self?.webViews[.home]?.reload()
+            if preloadAlreadyCorrect {
+                print("[BI-harvest] disk preload matched live harvest; skipping post-harvest reload")
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    self?.webViews[.home]?.reload()
+                }
             }
         }
     }
@@ -529,16 +906,169 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     func retryFavoritesFeed() {
         feedStuck = false
         feedRecoveryAttempts = 0
+        // An explicit user retry restores the full recovery budget; otherwise a
+        // previously exhausted harvest webview would give up on first failure.
+        harvestRecoveryAttempts = 0
         reharvestAndReloadHome()
+    }
+
+    /// R1 fails closed. Whenever the favorites feed cannot be produced or
+    /// verified, Instagram's algorithmic feed must never be presented as a
+    /// successful result. Drop the splash (so the other three tabs stay usable
+    /// — R1 is a home-feed contract) and put home into the existing degraded
+    /// state, which gets one automatic recovery attempt before the retry
+    /// screen takes over.
+    @MainActor
+    private func failFeedClosed(_ reason: String) {
+        print("[BI-harvest] fail-closed: \(reason)")
+        favoritesFeedReady = true
+        endRefresh()
+        handleFeedStuck()
     }
 
     private func reharvestAndReloadHome() {
         cachedFavEdgesJSON = nil
         didReloadHomeForFavorites = false
+        // Explicit retry/refresh reload, not the disk-warm-start case — never
+        // let finishHarvest's no-op check skip it.
+        preloadedFromDiskJSON = nil
+        // The rebuild is not a rendered favorites feed: keep the splash over it
+        // so this generation's fail-closed deadline is meaningful again.
+        favoritesFeedReady = false
         harvestFavorites()
         if let url = URL(string: homeURLString) {
             webViews[.home]?.load(URLRequest(url: url))
         }
+    }
+
+    // MARK: - Webview process / navigation recovery
+
+    /// WebKit killed the content process (usually memory pressure while four
+    /// persistent webviews plus the harvest webview are alive). Reload rather
+    /// than leave a blank page, preserving the scroll position, and give up
+    /// into a visible degraded state rather than looping.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        if webView === favHarvestWebView {
+            recoverHarvestWebView(reason: "content process terminated")
+        } else {
+            recoverTab(webView, reason: "content process terminated")
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        handleNavigationFailure(webView, error: error)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didFailProvisionalNavigation navigation: WKNavigation!,
+        withError error: Error
+    ) {
+        handleNavigationFailure(webView, error: error)
+    }
+
+    private func handleNavigationFailure(_ webView: WKWebView, error: Error) {
+        let nsError = error as NSError
+        // -999 is an ordinary cancel (a new load superseded this one, which the
+        // harvest and every retry path do constantly). WebKitErrorDomain 102 is
+        // "frame load interrupted by policy change" — literally what our own
+        // decidePolicyFor(.cancel) produces for /reels and /explore, so
+        // treating it as a failure would fight the R2 block.
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled { return }
+        if nsError.domain == "WebKitErrorDomain" && nsError.code == 102 { return }
+        let reason = "navigation failed (\(nsError.domain) \(nsError.code))"
+        if webView === favHarvestWebView {
+            recoverHarvestWebView(reason: reason)
+        } else {
+            recoverTab(webView, reason: reason)
+        }
+    }
+
+    private func recoverTab(_ webView: WKWebView, reason: String) {
+        let key = ObjectIdentifier(webView)
+        let target = webViews.first { $0.value === webView }?.key
+        let label = target.map(String.init(describing:)) ?? "unknown tab"
+        let attempt = (recoveryAttempts[key] ?? 0) + 1
+        guard attempt <= Self.maxRecoveryAttempts else {
+            print("[BI-recovery] \(label): \(reason); giving up after \(Self.maxRecoveryAttempts) attempts")
+            if target == .home {
+                DispatchQueue.main.async { [weak self] in self?.failFeedClosed("home webview unrecoverable — \(reason)") }
+            }
+            return
+        }
+        recoveryAttempts[key] = attempt
+        // After a content-process kill the scroll view keeps its last offset,
+        // so stash it now and restore it once the replacement content lays out.
+        let offset = webView.scrollView.contentOffset
+        if offset.y > 0 { pendingScrollRestore[key] = offset }
+        print("[BI-recovery] \(label): \(reason); reloading (attempt \(attempt))")
+        let fallback = target.flatMap { $0 == .home ? homeURLString : startURLs[$0] }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4 * Double(attempt)) { [weak webView] in
+            guard let webView else { return }
+            if webView.url != nil {
+                webView.reload()
+            } else if let fallback, let url = URL(string: fallback) {
+                webView.load(URLRequest(url: url))
+            }
+        }
+    }
+
+    /// The harvest webview is offscreen and disposable, so recovery discards it
+    /// and starts a fresh harvest generation rather than reloading a webview
+    /// whose process just died. Exhausting the budget fails the feed closed.
+    private func recoverHarvestWebView(reason: String) {
+        if let webView = favHarvestWebView {
+            webView.navigationDelegate = nil
+            webView.removeFromSuperview()
+            favHarvestWebView = nil
+        }
+        harvestRecoveryAttempts += 1
+        guard harvestRecoveryAttempts <= Self.maxRecoveryAttempts else {
+            print("[BI-harvest] harvest webview \(reason); giving up after \(Self.maxRecoveryAttempts) retries")
+            DispatchQueue.main.async { [weak self] in self?.failFeedClosed("harvest webview \(reason)") }
+            return
+        }
+        print("[BI-harvest] harvest webview \(reason); retry \(harvestRecoveryAttempts)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.harvestFavorites()
+        }
+    }
+
+    private func restoreScrollPositionIfNeeded(for webView: WKWebView) {
+        let key = ObjectIdentifier(webView)
+        recoveryAttempts[key] = 0
+        guard let offset = pendingScrollRestore.removeValue(forKey: key) else { return }
+        // One layout pass after didFinish the content height is real; clamp so
+        // a now-shorter page can't be scrolled past its end.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak webView] in
+            guard let webView else { return }
+            let scrollView = webView.scrollView
+            let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+            guard maxY > 0 else { return }
+            scrollView.setContentOffset(CGPoint(x: 0, y: min(offset.y, maxY)), animated: false)
+        }
+    }
+
+    // MARK: - Pull to refresh (home)
+
+    /// Pull down on the home feed → re-harvest favorites and reload home. The
+    /// refresh spinner ends when the fresh favorites feed renders (biFavReady)
+    /// or after a safety timeout.
+    @objc private func handlePullToRefresh() {
+        refreshInFlight = true
+        refreshingViaPull = true
+        print("[BI] pull-to-refresh: re-harvest + reload home")
+        reharvestAndReloadHome()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in
+            self?.endRefresh()
+        }
+    }
+
+    private func endRefresh() {
+        guard refreshInFlight else { return }
+        refreshInFlight = false
+        refreshingViaPull = false
+        homeRefreshControl?.endRefreshing()
     }
 
     private static func keyWindow() -> UIWindow? {
@@ -637,16 +1167,44 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         })?.value ?? ""
     }
 
+    /// Account identity. `sessionid` is the login signal but its value also
+    /// rotates on re-auth/2FA within one account, so it can't tell an account
+    /// switch from a refreshed session. `ds_user_id` is the account's numeric
+    /// id and only changes when the account does.
+    private static func userID(from cookies: [HTTPCookie]) -> String {
+        cookies.first(where: {
+            $0.name == "ds_user_id" && $0.domain.contains("instagram.com")
+        })?.value ?? ""
+    }
+
     func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
         cookieStore.getAllCookies { [weak self] cookies in
             DispatchQueue.main.async {
                 guard let self else { return }
                 let session = Self.sessionID(from: cookies)
-                guard session != self.lastSessionID else { return }
+                let user = Self.userID(from: cookies)
                 let wasLoggedOut = self.lastSessionID.isEmpty
+                let previousUser = self.lastUserID
+                // An account switch inside the same shared data store: every
+                // cached artifact (harvested edges, sync baseline, resolved
+                // profile) belongs to the PREVIOUS account and would otherwise
+                // be spliced straight into the new account's feed.
+                let switchedAccount = !previousUser.isEmpty && !user.isEmpty && user != previousUser
+                guard session != self.lastSessionID || switchedAccount else { return }
                 self.lastSessionID = session
+                self.lastUserID = user
                 self.isLoggedIn = !session.isEmpty
-                if wasLoggedOut && !session.isEmpty {
+                if switchedAccount || (session.isEmpty && !previousUser.isEmpty) {
+                    self.resetAccountDerivedState(loggedOut: session.isEmpty)
+                }
+                guard !session.isEmpty else { return }
+                if switchedAccount {
+                    self.reloadSecondaryTabs()
+                    if let url = URL(string: self.homeURLString) {
+                        self.webViews[.home]?.load(URLRequest(url: url))
+                    }
+                    self.harvestFavorites()
+                } else if wasLoggedOut {
                     self.reloadSecondaryTabs()
                     self.harvestFavorites()
                 }
@@ -654,9 +1212,42 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         }
     }
 
+    /// Clears the state derived from one specific Instagram account. The
+    /// favorites *picks* themselves live in `FavoritesStore` under global,
+    /// un-namespaced `UserDefaults` keys and are deliberately not touched here
+    /// — see known-issues.md for the remaining namespacing work. This only
+    /// stops the previous account's harvest, sync baseline and profile
+    /// resolution from leaking into the next one.
+    @MainActor
+    private func resetAccountDerivedState(loggedOut: Bool) {
+        // Invalidate any harvest still in flight for the previous account.
+        harvestGeneration += 1
+        cachedFavEdgesJSON = nil
+        preloadedFromDiskJSON = nil
+        UserDefaults.standard.removeObject(forKey: Self.favEdgesCacheKey)
+        // The remove-side reconcile baseline is "what this app added for THAT
+        // account" — applying it to another account would unfavorite accounts
+        // it never touched.
+        UserDefaults.standard.removeObject(forKey: Self.syncedFavoritesKey)
+        favoritesSyncDegraded = false
+        UserDefaults.standard.set(false, forKey: Self.favoritesSyncDegradedKey)
+        profileResolved = false
+        resolvedProfileURLString = nil
+        didReloadHomeForFavorites = false
+        didRunLaunchSync = false
+        harvestRecoveryAttempts = 0
+        feedRecoveryAttempts = 0
+        feedStuck = false
+        favoritesFeedReady = false
+        // Drops window.__biFavEdgesPreload so the next document-start injection
+        // cannot SSR-splice the old account's posts.
+        installUserScripts()
+        print("[BI] \(loggedOut ? "logged out" : "account changed") — cleared account-derived state")
+    }
+
     private func reloadSecondaryTabs() {
         for target in [NavTarget.search, .direct, .profile] {
-            if let url = URL(string: startURLs[target]!) {
+            if let start = startURLs[target], let url = URL(string: start) {
                 webViews[target]?.load(URLRequest(url: url))
             }
         }
@@ -675,7 +1266,27 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             return
         }
 
-        if blockedExactPaths.contains(url.path) {
+        let scheme = (url.scheme ?? "").lowercased()
+        guard scheme == "http" || scheme == "https" else {
+            // about:/blob:/data: are WebKit's own internals, not navigation the
+            // user asked for. The handful of schemes the system genuinely owns
+            // go to the OS. Everything else — instagram://, fb://, itms-apps:
+            // — is an "open in the app" nag, and following it would eject the
+            // user into the very app this one exists to replace.
+            if Self.webKitInternalSchemes.contains(scheme) {
+                decisionHandler(.allow)
+            } else {
+                decisionHandler(.cancel)
+                if Self.externallyOpenableSchemes.contains(scheme) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            return
+        }
+
+        // Host-scoped: matching on path alone also cancelled any other site's
+        // /reels or /explore page. The R2 block is about Instagram's own routes.
+        if Self.isInAppHost(url), blockedExactPaths.contains(url.path) {
             decisionHandler(.cancel)
             if webView.canGoBack {
                 webView.goBack()
@@ -685,28 +1296,65 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             return
         }
 
+        // A tapped link leaving the Meta host family is a real web page, not
+        // part of this app — hand it to Safari. Only .linkActivated qualifies:
+        // redirects and client-driven loads arrive as .other, and Instagram's
+        // login / challenge / 2FA flows hop between instagram.com and
+        // facebook.com that way, so intercepting them would break sign-in.
+        if navigationAction.navigationType == .linkActivated, !Self.isInAppHost(url) {
+            decisionHandler(.cancel)
+            UIApplication.shared.open(url)
+            return
+        }
+
         decisionHandler(.allow)
     }
 
     // target="_blank" links (common on DM share cards) otherwise go nowhere;
-    // route them into the same webview so the reel permalink actually opens.
+    // route Instagram's own into the same webview so the reel permalink
+    // actually opens, and genuinely external ones out to Safari.
     func webView(
         _ webView: WKWebView,
         createWebViewWith configuration: WKWebViewConfiguration,
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        if navigationAction.targetFrame == nil, let url = navigationAction.request.url {
+        guard navigationAction.targetFrame == nil,
+              let url = navigationAction.request.url else { return nil }
+        let scheme = (url.scheme ?? "").lowercased()
+        guard scheme == "http" || scheme == "https" else { return nil }
+        if Self.isInAppHost(url) {
             webView.load(URLRequest(url: url))
+        } else {
+            UIApplication.shared.open(url)
         }
         return nil
     }
 
+    // Hosts that stay in-app. Instagram's login, checkpoint/challenge, 2FA and
+    // Accounts Center flows redirect across the Meta host family, and the
+    // Safari session shares none of this app's cookies, so bouncing any of
+    // them out would strand the user mid-sign-in.
+    private static let inAppHostSuffixes = [
+        "instagram.com", "cdninstagram.com", "facebook.com", "fbcdn.net",
+        "fb.com", "messenger.com", "meta.com", "threads.com", "threads.net"
+    ]
+    private static let webKitInternalSchemes: Set<String> = ["about", "blob", "data"]
+    private static let externallyOpenableSchemes: Set<String> = [
+        "mailto", "tel", "sms", "facetime", "maps"
+    ]
+
+    private static func isInAppHost(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        return inAppHostSuffixes.contains { host == $0 || host.hasSuffix("." + $0) }
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if webView === favHarvestWebView {
-            harvestExtract()
+            harvestExtract(generation: harvestGeneration)
             return
         }
+        restoreScrollPositionIfNeeded(for: webView)
         webView.evaluateJavaScript(ContentFilter.reapplyCall, completionHandler: nil)
         // Re-push cached favorites edges to the home tab on every (re)load so the
         // splice has them even after a navigation resets the page's JS state.
@@ -741,7 +1389,13 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                     self.navVisibleCache[ObjectIdentifier(source)] = visible
                 }
                 if source === self.webViews[self.activeTarget] {
-                    self.bridge.isNavVisible = visible
+                    if UIAccessibility.isReduceMotionEnabled {
+                        self.bridge.isNavVisible = visible
+                    } else {
+                        withAnimation(.easeInOut(duration: 0.28)) {
+                            self.bridge.isNavVisible = visible
+                        }
+                    }
                 }
             }
         } else if message.name == "biAvatar", let urlString = message.body as? String {
@@ -753,6 +1407,10 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 guard !self.profileResolved,
                       let url = URL(string: "https://www.instagram.com" + href) else { return }
                 self.profileResolved = true
+                self.resolvedProfileURLString = url.absoluteString
+                // Preload immediately only if the profile tab already exists
+                // (was already visited); otherwise its eventual lazy creation
+                // will load this resolved URL directly (see makeWebView).
                 self.webViews[.profile]?.load(URLRequest(url: url))
             }
         } else if message.name == "biFavEdit" {
@@ -766,22 +1424,57 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 // budget so a future stuck feed gets a fresh recovery attempt.
                 self.feedStuck = false
                 self.feedRecoveryAttempts = 0
+                self.endRefresh()
+                #if DEBUG
+                if ProcessInfo.processInfo.environment["BI_STORY_TIMING_PROBE"] == "1",
+                   !self.didRunStoryTimingProbe,
+                   let home = self.webViews[.home] {
+                    self.didRunStoryTimingProbe = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                        home.evaluateJavaScript("""
+                        (function clickStory(attempt) {
+                          const hit = document.elementFromPoint(window.innerWidth * 0.38, 150);
+                          const target = hit && (hit.closest('a, button, [role="button"], [role="link"]') || hit);
+                          if (target) { target.click(); return; }
+                          if (attempt < 100) setTimeout(function() { clickStory(attempt + 1); }, 200);
+                        })(0);
+                        """)
+                    }
+                }
+                #endif
             }
         } else if message.name == "biFeedStuck" {
             DispatchQueue.main.async { self.handleFeedStuck() }
-        } else if message.name == "biScroll", let locked = message.body as? Bool {
+        } else if message.name == "biPresentation",
+                  let payload = message.body as? [String: Any],
+                  let locked = payload["locked"] as? Bool,
+                  let immersive = payload["immersive"] as? Bool {
             let source = message.webView
             DispatchQueue.main.async {
-                source?.scrollView.isScrollEnabled = !locked
+                guard let source else { return }
+                self.setPresentation(locked: locked, immersive: immersive, for: source)
             }
         } else if message.name == "biBg", let css = message.body as? String {
             if let color = Self.parseCSSColor(css) {
                 let source = message.webView
                 DispatchQueue.main.async {
-                    self.bridge.pageBackground = color
                     let uiColor = UIColor(color)
                     source?.backgroundColor = uiColor
                     source?.scrollView.backgroundColor = uiColor
+                    if let source {
+                        self.pageBackgroundCache[ObjectIdentifier(source)] = color
+                    }
+                    if source === self.webViews[self.activeTarget] {
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) {
+                            self.bridge.pageBackground = color
+                            if let source,
+                               self.immersiveCache[ObjectIdentifier(source)] != true {
+                                self.bridge.safeAreaBackground = color
+                            }
+                        }
+                    }
                 }
             }
         } else if message.name == "biLog", let text = message.body as? String {

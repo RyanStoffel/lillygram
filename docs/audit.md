@@ -15,7 +15,7 @@ layer, blocking approach, or favorites pipeline changes materially._
 | Project structure / deps | **ALIGNED** | — |
 | WKWebView configuration | **ALIGNED** | Low |
 | Persistent-webview reuse | **PARTIAL** | Medium (memory) |
-| Blocking mechanism (JS/CSS vs content rules) | **PARTIAL** | Medium (fragility, main-thread) |
+| Blocking mechanism (JS/CSS vs content rules) | **PARTIAL** (small static subset now on `WKContentRuleList`) | Low–Medium (fragility, main-thread) |
 | Script-injection timing / flash | **ALIGNED** | Low |
 | Feed response-rewrite (favorites splice) | **MISALIGNED by nature** | High fragility (load-bearing; now via SSR `JSON.parse` splice — renders on device) |
 | Reels blocking | **ALIGNED** | Low |
@@ -60,20 +60,32 @@ iOS 26) — see [known-issues.md](known-issues.md).
 
 ## Evaluation (best practice + verdict per area)
 
-### 1. Content-blocking mechanism — PARTIAL
-- **Now:** 100% imperative JS/CSS + MutationObserver + response rewriting; no
-  `WKContentRuleList`.
+### 1. Content-blocking mechanism — PARTIAL (small static subset addressed)
+- **Now:** primarily imperative JS/CSS + MutationObserver + response rewriting.
+  **One small addition:** `BlockingRules.json`, a `WKContentRuleList` compiled
+  in `WebViewStore.compileContentRuleList()` and added to the shared
+  `userContentController` before the home webview's first load, carrying a
+  single `css-display-none` rule for the three static, always-true nav-chrome
+  targets (Explore link, Reels link, Reels tab icon — see
+  `blocking-and-selectors.md`). Additive only: the equivalent CSS hides in
+  `ContentFilter.swift` are unchanged and remain the primary mechanism;
+  compilation failure is caught/logged and the app degrades to JS/CSS-only,
+  exactly as before this change.
 - **Best practice:** `WKContentRuleList` compiles to bytecode run in the
   **networking subsystem**, off the main/JS thread — the correct, fastest,
   flash-free tool for **static** blocking (URL patterns, `css-display-none` by
   selector), main-frame-scopable since WWDC22. But it is **declarative only** —
   it cannot parse GraphQL, dedupe edges, or run the favorites splice.
-- **Verdict:** dynamic logic is correctly JS; the **static** hides (Explore
-  link, known reel chrome, blocked routes) sit in JS/CSS where a content rule is
-  more reliable/flash-free.
-- **Impact:** modest — avoidable main-thread work + minor flicker risk.
-- **Worth it?** Yes for the static subset — low effort, isolated. Not worth
-  forcing dynamic logic into rules (impossible).
+- **Verdict:** dynamic logic is correctly JS (unchanged, and explicitly kept
+  there — the favorites splice, search-result filtering, and DM-reel logic are
+  not candidates). The three static nav-chrome hides now have a redundant,
+  flash-free content-rule path; other blocked routes (`/reels/`, `/explore/`
+  full-page loads) remain native `decidePolicyFor`/SPA-guard logic, which was
+  judged out of scope for this pass.
+- **Impact:** modest — avoidable main-thread work + minor flicker risk for the
+  subset now covered; unchanged elsewhere.
+- **Worth it?** Done for the safest static subset. Expanding further (e.g. more
+  route-level `block` rules) is a possible future increment, not required now.
 
 ### 2. Script-injection timing / flash — ALIGNED
 - **Now:** userscript + CSS at `.atDocumentStart`, `forMainFrameOnly:false`.
@@ -149,8 +161,11 @@ iOS 26) — see [known-issues.md](known-issues.md).
   loops (1-attempt budget), no algorithmic leak (R1 preserved). Feed hooks
   already prefer structural `feed__timeline` matches over exact `doc_id`s;
   `sanitizeFavEdges` degrades bad edges to the native feed rather than hanging.
-- **Still open:** the favorites-sync `doc_id`s are exact (rotate ~weeks); the
-  `confirmed=0` check flags it but there's no auto-recapture.
+- **Still open:** the favorites-sync `doc_id`s are exact (rotate ~weeks); no
+  auto-recapture (see [known-issues.md](known-issues.md) #5 "Proposed: doc_id
+  resilience" for why dynamic discovery isn't confidently buildable yet). The
+  `confirmed=0` check now at least flips a persisted `favoritesSyncDegraded`
+  signal instead of only a console line, but nothing surfaces it in the UI yet.
 
 ### 8. Performance: warm-up / launch / white flash — PARTIAL
 - **Now:** persistent webviews (good) + `isOpaque=false` + `backgroundColor`
@@ -197,8 +212,10 @@ native-WebView migration). The real gaps, in priority order:
 1. **Resilience / fail-safe layer** — highest leverage; make hooks degrade
    gracefully and never leave the feed spinning.
 2. **Account-only search** — a requirement (R3) that is currently unmet.
-3. **Static blocking → `WKContentRuleList`** — modest reliability/perf win, low
-   effort, keep dynamic logic in JS.
+3. **Static blocking → `WKContentRuleList`** — done for the safest subset
+   (Explore/Reels nav chrome, `BlockingRules.json`); dynamic logic stays in JS.
+   Further static targets could be added incrementally if confidently
+   identified.
 4. **Launch memory + reload seam** — trim eager 4-webview creation and the
    post-harvest reload.
 

@@ -12,6 +12,9 @@ enum ContentFilter {
       let favSet = new Set();
       let favoritesOn = false;
       const dmThumbCache = {};
+      const preRouteViewerGeometry = new WeakMap();
+      let activeStorySurface = null;
+      let activeReelSurface = null;
 
       const style = document.createElement('style');
       style.id = '__bi_filter_style';
@@ -73,19 +76,96 @@ enum ContentFilter {
         return /^\\/reels?\\/[^/]+/.test(location.pathname) && !isReelSectionPage();
       }
 
+      function visibleViewerElement(el, minWidth, minHeight) {
+        if (!el || !el.isConnected) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width < window.innerWidth * minWidth || r.height < window.innerHeight * minHeight) return false;
+        if (r.bottom <= 0 || r.top >= window.innerHeight) return false;
+        const cs = getComputedStyle(el);
+        return cs.display !== 'none' && cs.visibility !== 'hidden' && parseFloat(cs.opacity || '1') > 0.01;
+      }
+
+      function becameViewerSized(el, minWidth, minHeight) {
+        const before = preRouteViewerGeometry.get(el);
+        return !before || before.width < minWidth || before.height < minHeight;
+      }
+
+      function rememberPreRouteViewerGeometry(url) {
+        if (url === undefined || url === null) return;
+        let nextPath = null;
+        try { nextPath = new URL(String(url), location.href).pathname; } catch (e) { return; }
+        if (nextPath === location.pathname) return;
+        document.querySelectorAll('img, video, canvas, [role="dialog"]').forEach(function(el) {
+          const r = el.getBoundingClientRect();
+          preRouteViewerGeometry.set(el, {
+            width: r.width / Math.max(window.innerWidth, 1),
+            height: r.height / Math.max(window.innerHeight, 1)
+          });
+        });
+      }
+
+      function storyViewerSurface() {
+        if (visibleViewerElement(activeStorySurface, 0.55, 0.45)) return activeStorySurface;
+        activeStorySurface = null;
+        if (!/^\\/stories\\//.test(location.pathname)) return null;
+        const candidates = document.querySelectorAll('[role="dialog"], video, canvas, img');
+        for (let i = 0; i < candidates.length; i++) {
+          const candidate = candidates[i];
+          if (candidate.closest && candidate.closest('article')) continue;
+          if (!visibleViewerElement(candidate, 0.55, 0.45)) continue;
+          if (!becameViewerSized(candidate, 0.55, 0.45)) continue;
+          activeStorySurface = candidate;
+          return candidate;
+        }
+        return null;
+      }
+
+      function reelViewerSurface() {
+        if (visibleViewerElement(activeReelSurface, 0.85, 0.6)) return activeReelSurface;
+        activeReelSurface = null;
+        const candidate = activeReelVideo();
+        if (!candidate || !becameViewerSized(candidate, 0.85, 0.6)) return null;
+        activeReelSurface = candidate;
+        return candidate;
+      }
+
       // The reels viewer doesn't always change the URL (opened from a DM
       // thread it can be an overlay while the path stays /direct/t/...), so
       // lock on either a reel permalink or a near-fullscreen video. Home and
       // stories are excluded: feed videos never lock the feed, and stories
       // need their own gestures.
+      //
+      // The geometry check alone is probabilistic: it can misfire on some
+      // other fullscreen video (an IGTV /tv/ page, a profile-grid post modal)
+      // or miss a real one on a markup change. `dmOverlaySignal()` is a
+      // secondary, more structural corroboration: the DM reel overlay stays
+      // on a /direct/ route and renders inside a dialog layer over the
+      // thread (see the comment above and the [role="dialog"] use elsewhere
+      // in this file). It is a failure guard, not a gate: if it can't
+      // confirm, we still lock. R2 only requires that a real DM reel never
+      // chains — a false positive (locking some other fullscreen video) is
+      // low-cost, but a false negative would let chaining slip through.
+      function dmOverlaySignal(video) {
+        if (/^\\/direct\\//.test(location.pathname)) return true;
+        try {
+          return !!video.closest('[role="dialog"]');
+        } catch (e) {
+          return false;
+        }
+      }
+
       function activeReelVideo() {
         if (location.pathname === '/' || /^\\/stories\\//.test(location.pathname)) return null;
         const videos = document.querySelectorAll('video');
         for (let i = 0; i < videos.length; i++) {
-          const r = videos[i].getBoundingClientRect();
-          if (r.width >= window.innerWidth * 0.85 && r.height >= window.innerHeight * 0.6) {
-            return videos[i];
+          const video = videos[i];
+          const r = video.getBoundingClientRect();
+          const geometryMatch = r.width >= window.innerWidth * 0.85 && r.height >= window.innerHeight * 0.6;
+          if (!geometryMatch) continue;
+          if (!dmOverlaySignal(video)) {
+            biLog('[reel-lock] geometry match without route/dialog corroboration at ' + location.pathname + ' - locking anyway');
           }
+          return video;
         }
         return null;
       }
@@ -93,6 +173,21 @@ enum ContentFilter {
       function shouldLockScroll() {
         if (isReelPermalink() && document.querySelector('video')) return true;
         return !!activeReelVideo();
+      }
+
+      function isImmersiveSurface(lock) {
+        return !!(storyViewerSurface() || reelViewerSurface());
+      }
+
+      function postPresentation(lock, immersive, reason) {
+        if (!isTopFrame) return;
+        const key = (lock ? '1' : '0') + (immersive ? '1' : '0');
+        if (window.__biLastPresentation === key) return;
+        window.__biLastPresentation = key;
+        biLog('[present] lock=' + lock + ' immersive=' + immersive + ' reason=' + reason + ' path=' + location.pathname);
+        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.biPresentation) {
+          window.webkit.messageHandlers.biPresentation.postMessage({ locked: lock, immersive: immersive });
+        }
       }
 
       // The scrollable / scroll-snap ancestor the reels viewer paginates
@@ -188,6 +283,13 @@ enum ContentFilter {
         if (favoritesOn && location.pathname === '/' && !window.__biNativeFavMode) {
           const author = articleAuthor(article);
           if (author && !favSet.has(author) && !favAuthors.has(author)) {
+            hide(article);
+            return;
+          }
+          // Once the splice is known to have failed there is no trustworthy
+          // allowlist left, so "leave unknown authors alone" stops being the
+          // safe default and becomes an R1 hole. Fail closed instead.
+          if (!author && window.__biFeedDegraded) {
             hide(article);
             return;
           }
@@ -295,6 +397,109 @@ enum ContentFilter {
         return changed;
       }
 
+      // ---- search result filtering (R3) -----------------------------------
+      // Instagram's search endpoints ("topsearch" blended search, and the
+      // Explore search-results calls the search screen makes as you type) can
+      // return posts, hashtags, places, and AI/"about this" summary blocks
+      // alongside account (`users`) results in the SAME response. Unlike the
+      // home feed, search results are never server-streamed into the initial
+      // page HTML (they only exist after the user types a query), so there is
+      // no document-start JSON.parse block to hook the way
+      // installSSRFeedSplice() does for the feed. The equivalent choke point
+      // here is the network-response layer this file already patches for the
+      // same "rewrite the data before React renders it" reason
+      // (installFetchFilter / installXHRFilter below): stripping non-account
+      // keys there means Instagram's own search UI only ever sees accounts,
+      // so there is no post/hashtag/AI flash to hide after the fact (R4).
+      //
+      // ASSUMPTION - verify on device via the [search] biLog line: the exact
+      // key names below (hashtags/places/clips/sections/etc.) are inferred
+      // from the known topsearch shape (see blocking-and-selectors.md) and
+      // Instagram's general search/Explore conventions, not captured live
+      // from a real search response in this sandbox. If a real response uses
+      // different key names for its non-account content, this needs a
+      // follow-up capture + key update.
+      function looksLikeSearchPayload(obj) {
+        return !!obj && typeof obj === 'object' && Array.isArray(obj.users);
+      }
+
+      // 'sections' is Instagram's generic Explore/search results container: an
+      // array of typed blocks (accounts, media grid, hashtags, ...). Keep only
+      // sections that look account-shaped; unrecognized shapes are left alone
+      // (fail open) so an account section we don't recognize is never hidden -
+      // same "unknown is left alone" philosophy as articleAuthor() above.
+      function filterSearchSections(sections) {
+        if (!Array.isArray(sections)) return null;
+        let changed = false;
+        const kept = sections.filter(function(section) {
+          if (!section || typeof section !== 'object') return true;
+          const type = String(
+            section.feed_type || section.type ||
+            (section.layout_content && section.layout_content.type) || ''
+          ).toLowerCase();
+          if (!type) return true;
+          if (type.indexOf('user') !== -1 || type.indexOf('account') !== -1) return true;
+          if (type.indexOf('media') !== -1 || type.indexOf('hashtag') !== -1 ||
+              type.indexOf('place') !== -1 || type.indexOf('clip') !== -1 ||
+              type.indexOf('ai') !== -1) {
+            changed = true;
+            return false;
+          }
+          return true;
+        });
+        return changed ? kept : null;
+      }
+
+      // Non-account result keys topsearch/Explore-search can carry alongside
+      // `users`. Emptied rather than deleted so Instagram's own rendering code
+      // (which may assume the key exists) never trips over a missing field -
+      // an empty array/null renders as "no results" for that section, never a
+      // flash of content.
+      const SEARCH_STRIP_KEYS = [
+        'hashtags', 'places', 'clips', 'medias', 'media_grid', 'reels',
+        'top_results', 'keyword_results', 'explore_grid',
+        'ai_agent_response', 'about_this_account'
+      ];
+
+      function stripNonAccountSearchKeys(payload) {
+        let changed = false;
+        SEARCH_STRIP_KEYS.forEach(function(key) {
+          const value = payload[key];
+          if (value == null) return;
+          if (Array.isArray(value)) {
+            if (value.length) { payload[key] = []; changed = true; }
+          } else {
+            payload[key] = null;
+            changed = true;
+          }
+        });
+        if (Array.isArray(payload.sections)) {
+          const kept = filterSearchSections(payload.sections);
+          if (kept) { payload.sections = kept; changed = true; }
+        }
+        return changed;
+      }
+
+      // Entry point used by both the fetch and XHR intercepts below. Only
+      // touches payloads that carry a `users` array (see
+      // looksLikeSearchPayload) - a plain feed/profile response never has one
+      // at the top level, so this cannot misfire on unrelated data.
+      function filterSearchPayload(payload) {
+        if (!looksLikeSearchPayload(payload)) return false;
+        return stripNonAccountSearchKeys(payload);
+      }
+
+      // Cheap text-level pre-check so fetch/XHR bodies that are obviously not
+      // search responses (the vast majority of traffic) skip the JSON.parse
+      // cost entirely (P5: no main-thread jank from injected JS).
+      function looksLikeSearchText(text) {
+        return typeof text === 'string' &&
+          text.indexOf('"users"') !== -1 &&
+          (text.indexOf('"hashtags"') !== -1 || text.indexOf('"places"') !== -1 ||
+           text.indexOf('"clips"') !== -1 || text.indexOf('"sections"') !== -1 ||
+           text.indexOf('"rank_token"') !== -1);
+      }
+
       // Instagram server-streams the home feed into the page HTML (inside
       // <script type="application/json" data-sjs> blocks) and renders the
       // INITIAL feed from that streamed data, NOT from the feed XHR. Its
@@ -306,7 +511,10 @@ enum ContentFilter {
       // available synchronously at document start; the XHR splice below still
       // covers infinite-scroll pages.
       function installSSRFeedSplice() {
-        if (window.__biSSRPatched) return;
+        // Main document only: the streamed feed blocks only ever exist in the
+        // top document, and a subframe's JSON.parse is a different realm that
+        // can never see them.
+        if (!isTopFrame || window.__biSSRPatched) return;
         window.__biSSRPatched = true;
         let ssrEdges = null;
         try {
@@ -357,29 +565,41 @@ enum ContentFilter {
           let url = '';
           try { url = (typeof input === 'string') ? input : ((input && input.url) || ''); } catch (e) {}
           const result = origFetch.apply(this, arguments);
-          if (!/\\/graphql|\\/api\\/v1\\/feed\\//.test(url)) return result;
+          if (!/\\/graphql|\\/api\\/v1\\/feed\\/|\\/api\\/v1\\/web\\/search\\/|\\/api\\/v1\\/fbsearch\\//.test(url)) return result;
           return result.then(function(response) {
             return response.clone().text().then(function(text) {
-              if (text.indexOf('feed__timeline') === -1 && text.indexOf('feed_items') === -1) return response;
+              const isFeedLike = text.indexOf('feed__timeline') !== -1 || text.indexOf('feed_items') !== -1;
+              const isSearchLike = looksLikeSearchText(text);
+              if (!isFeedLike && !isSearchLike) return response;
               let payload;
               try { payload = JSON.parse(text); } catch (e) { return response; }
-              const finish = function(changed, label) {
-                if (!changed) return response;
-                biLog('[fetch] ' + label + ' ' + url.slice(0, 80));
-                try {
-                  return new Response(JSON.stringify(payload), {
-                    status: response.status,
-                    statusText: response.statusText,
-                    headers: response.headers
-                  });
-                } catch (e) { return response; }
-              };
+              const labels = [];
+              let changed = false;
+              // R3: strip non-account search results (posts/hashtags/places/
+              // AI blocks) before Instagram's own code renders them. This is
+              // unrelated to the home feed splice below and runs regardless
+              // of favoritesOn.
+              if (isSearchLike && filterSearchPayload(payload)) {
+                changed = true;
+                labels.push('filtered search results to accounts-only');
+              }
               // In favorites mode the request rewrite already made IG return
-              // its favorites feed — leave the response completely untouched
-              // so IG renders it natively (modifying/re-serializing it makes
-              // IG's Relay renderer throw).
-              if (favoritesOn) return response;
-              return finish(filterFeedPayload(payload, 0), 'filtered feed page');
+              // its favorites feed — leave the feed response completely
+              // untouched so IG renders it natively (modifying/re-serializing
+              // it makes IG's Relay renderer throw).
+              if (isFeedLike && !favoritesOn && filterFeedPayload(payload, 0)) {
+                changed = true;
+                labels.push('filtered feed page');
+              }
+              if (!changed) return response;
+              biLog('[fetch] ' + labels.join(', ') + ' ' + url.slice(0, 80));
+              try {
+                return new Response(JSON.stringify(payload), {
+                  status: response.status,
+                  statusText: response.statusText,
+                  headers: response.headers
+                });
+              } catch (e) { return response; }
             }).catch(function() { return response; });
           });
         };
@@ -399,44 +619,46 @@ enum ContentFilter {
         Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'response').get;
 
       function rewriteFeedText(text) {
-        // Returns rewritten JSON string, or null if unchanged/not a feed.
-        if (!text || (text.indexOf('feed__timeline') === -1 && text.indexOf('feed_items') === -1)) return null;
+        // Returns rewritten JSON string, or null if unchanged (not a feed or
+        // search response we care about, or nothing needed rewriting).
+        if (!text) return null;
+        const isFeedLike = text.indexOf('feed__timeline') !== -1 || text.indexOf('feed_items') !== -1;
+        const isSearchLike = looksLikeSearchText(text);
+        if (!isFeedLike && !isSearchLike) return null;
         let payload;
         try { payload = JSON.parse(text); } catch (e) { return null; }
-        let changed;
-        if (favoritesOn) {
-          const before = extractTimelineEdges(payload);
-          // One-time shape diff: the edge IG's live home query returns vs the
-          // edge we're splicing in. Same query => must be identical shape; any
-          // key the FAV edge is missing (or the HOME edge has) is why Relay
-          // refuses to render the swap and hangs on the spinner.
-          if (!window.__biEdgeDiffLogged && before && before.length && favEdges && favEdges.length) {
-            window.__biEdgeDiffLogged = true;
-            const sig = function(e) {
-              const n = e && e.node;
-              const m = n && n.media;
-              return 'node{' + (n ? Object.keys(n).join(',') : '-') + '} media{' +
-                (m ? Object.keys(m).join(',') : '-') + '}';
-            };
-            biLog('[edgediff] HOME ' + sig(before[0]));
-            biLog('[edgediff] FAV  ' + sig(favEdges[0]));
-          }
-          changed = spliceFavoriteEdges(payload);
-          if (changed) {
-            biLog('[favsplice] swapped favorites into home response');
-            // Tell native the favorites feed is ready so it can drop the splash.
-            if (location.pathname === '/' && !window.__biFavReadyPosted) {
-              window.__biFavReadyPosted = true;
-              try { webkit.messageHandlers.biFavReady.postMessage(true); } catch (e) {}
+        let changed = false;
+        // R3: strip non-account search results before Instagram's search UI
+        // renders them. Independent of favoritesOn / native-favorites mode -
+        // unrelated to the feed connection those affect.
+        if (isSearchLike && filterSearchPayload(payload)) {
+          changed = true;
+          biLog('[search] filtered search results to accounts-only (xhr)');
+        }
+        // In native-favorites mode IG serves the favorites feed itself; never
+        // rewrite a feed response there or Relay throws and the feed spins
+        // (see favorites-feed.md).
+        if (isFeedLike && !window.__biNativeFavMode) {
+          if (favoritesOn) {
+            const before = extractTimelineEdges(payload);
+            const feedChanged = spliceFavoriteEdges(payload);
+            if (feedChanged) {
+              changed = true;
+              biLog('[favsplice] swapped favorites into home response');
+              // Tell native the favorites feed is ready so it can drop the splash.
+              if (location.pathname === '/' && !window.__biFavReadyPosted) {
+                window.__biFavReadyPosted = true;
+                try { webkit.messageHandlers.biFavReady.postMessage(true); } catch (e) {}
+              }
+            } else {
+              if (before && before.length) feedRenderedAlgorithmic = true;
+              biLog('[favsplice] NO SWAP (favEdges=' + (favEdges ? favEdges.length : 0) +
+                ' authors=' + (before ? edgeAuthors(before) : '?') + ')');
             }
           } else {
-            if (before && before.length) feedRenderedAlgorithmic = true;
-            biLog('[favsplice] NO SWAP (favEdges=' + (favEdges ? favEdges.length : 0) +
-              ' authors=' + (before ? edgeAuthors(before) : '?') + ')');
+            const feedChanged = filterFeedPayload(payload, 0);
+            if (feedChanged) { changed = true; biLog('[xhr] stripped reels/ads from feed'); }
           }
-        } else {
-          changed = filterFeedPayload(payload, 0);
-          if (changed) biLog('[xhr] stripped reels/ads from feed');
         }
         return changed ? JSON.stringify(payload) : null;
       }
@@ -447,9 +669,10 @@ enum ContentFilter {
         function compute() {
           if (computed || xhr.readyState !== 4) return;
           computed = true;
-          // In native-favorites mode IG serves the favorites feed itself; never
-          // rewrite a feed response or Relay throws and the feed spins.
-          if (window.__biNativeFavMode) { cachedText = null; return; }
+          // Native-favorites-mode's "never touch a feed response" guard now
+          // lives inside rewriteFeedText() itself, since a search response on
+          // the same XHR filter must still be filtered (R3) even when the
+          // home feed is in that mode.
           let text = null;
           try {
             const rt = xhr.responseType;
@@ -654,27 +877,30 @@ enum ContentFilter {
 
       let feedRenderedAlgorithmic = false;
 
+      // R1 fails CLOSED. If the harvest never delivers usable favorite edges,
+      // the held home request is released anyway (holding it forever would
+      // just be a permanent spinner) and Instagram renders its algorithmic
+      // feed. That must never be presented as a successful favorites feed, so
+      // tell native, which blocks the home surface with the degraded/retry
+      // screen instead of dropping the splash onto it.
+      function reportFeedDegraded(reason) {
+        if (!isTopFrame || window.__biFeedDegraded) return;
+        window.__biFeedDegraded = true;
+        biLog('[favsplice] DEGRADED (' + reason + ') - failing closed');
+        scheduleApply();
+        try {
+          if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.biFeedStuck) {
+            window.webkit.messageHandlers.biFeedStuck.postMessage(true);
+          }
+        } catch (e) {}
+      }
+
       // Native entry point: receives the harvested favorites payload
       // ({markers, count, authors, edges}) as a JSON string.
       window.__biSetFavEdges = function(payload) {
         try {
           const obj = typeof payload === 'string' ? JSON.parse(payload) : payload;
           const rawEdges = obj && obj.edges;
-          // One-time shape dump: for each harvested edge, log the node's top
-          // keys and whether it carries renderable media. Tells us definitively
-          // whether Relay is hanging on non-post / content-less edges.
-          if (rawEdges && !window.__biFavShapeLogged) {
-            window.__biFavShapeLogged = true;
-            try {
-              biLog('[favshape] ' + JSON.stringify((rawEdges || []).slice(0, 10).map(function(e) {
-                const n = e && e.node;
-                const m = n && n.media;
-                return (n ? Object.keys(n).slice(0, 4).join('|') : 'no-node') + '=>' +
-                  (m ? ('media(' + (m.image_versions2 ? 'i' : '-') + (m.carousel_media ? 'c' : '-') +
-                    (m.video_versions ? 'v' : '-') + ' id=' + (m.pk || m.id || m.code || '?') + ')') : 'no-media');
-              })));
-            } catch (e) { biLog('[favshape] err ' + e); }
-          }
           const edges = sanitizeFavEdges(rawEdges);
           if (edges.length) {
             favEdges = edges;
@@ -693,6 +919,7 @@ enum ContentFilter {
           } else {
             biLog('[favsplice] harvest delivered 0 edges (markers=' +
               JSON.stringify(obj && obj.markers) + ')');
+            if (favoritesOn) reportFeedDegraded('harvest delivered 0 edges');
             if (favEdgesResolve) { favEdgesResolve(); favEdgesResolve = null; }
           }
         } catch (e) { biLog('[favsplice] setFavEdges err ' + e); }
@@ -711,6 +938,11 @@ enum ContentFilter {
           setTimeout(function() {
             if (favEdgesResolve) {
               biLog('[favsplice] favorite edges wait timed out');
+              // The request still goes out — a held-forever request is just a
+              // permanent spinner — but native is told first, so the feed it
+              // renders is covered by the degraded screen, never presented as
+              // the favorites feed (R1).
+              reportFeedDegraded('harvest edges never arrived');
               favEdgesResolve = null;
               resolve();
             }
@@ -732,7 +964,7 @@ enum ContentFilter {
         };
         XMLHttpRequest.prototype.open = function(method, url) {
           this.__biUrl = String(url || '');
-          if (/\\/graphql|\\/api\\/v1\\/feed\\//.test(this.__biUrl)) {
+          if (/\\/graphql|\\/api\\/v1\\/feed\\/|\\/api\\/v1\\/web\\/search\\/|\\/api\\/v1\\/fbsearch\\//.test(this.__biUrl)) {
             // Install lazy response getters now so the rewrite lands no matter
             // who reads the response first (IG's own handler often reads before
             // an added readystatechange listener would fire).
@@ -800,6 +1032,7 @@ enum ContentFilter {
       function onRouteChange() {
         updateScrollLock();
         reportNavVisibility();
+        reportBackgroundColor();
         scheduleApply();
       }
 
@@ -819,6 +1052,7 @@ enum ContentFilter {
               location.assign('/');
               return undefined;
             }
+            rememberPreRouteViewerGeometry(url);
             const result = original.apply(this, arguments);
             onRouteChange();
             return result;
@@ -855,6 +1089,7 @@ enum ContentFilter {
 
       function updateScrollLock() {
         const lock = shouldLockScroll();
+        const immersive = isImmersiveSurface(lock);
         const html = document.documentElement;
         const has = html.classList.contains('__bi_noscroll');
         if (lock && !has) html.classList.add('__bi_noscroll');
@@ -873,13 +1108,7 @@ enum ContentFilter {
             el.classList.remove('__bi_reel_hidden');
           });
         }
-        if (isTopFrame && window.__biLastScrollLock !== lock) {
-          window.__biLastScrollLock = lock;
-          biLog('[scroll] lock=' + lock + ' path=' + location.pathname);
-          if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.biScroll) {
-            window.webkit.messageHandlers.biScroll.postMessage(lock);
-          }
-        }
+        postPresentation(lock, immersive, 'dom');
       }
 
       // Comment sheets and text inputs stay scrollable/usable while the reel
@@ -1084,39 +1313,53 @@ enum ContentFilter {
         }, true);
       }
 
+      // Fullscreen only has to be suppressed inside the locked reel
+      // presentation (R2): the system player is its own scroll surface, so
+      // handing a locked reel to it would restore swipe-to-next outside the
+      // DOM lock. Everywhere else — stories, feed video, a post's own player —
+      // fullscreen is legitimate and must keep working. The prototype patches
+      // still have to be installed once at document start (before Instagram
+      // captures its own references), so they delegate to the originals and
+      // only suppress while the lock is actually active.
       function preventNativeFullscreen() {
         if (window.__biFullscreenPatched) return;
         window.__biFullscreenPatched = true;
 
+        function reelLocked() {
+          try { return shouldLockScroll(); } catch (e) { return false; }
+        }
+
         const mediaProto = window.HTMLMediaElement && HTMLMediaElement.prototype;
         if (mediaProto && mediaProto.webkitEnterFullscreen) {
+          const origEnter = mediaProto.webkitEnterFullscreen;
           try {
             Object.defineProperty(mediaProto, 'webkitEnterFullscreen', {
-              value: function() {},
+              value: function() {
+                if (reelLocked()) return;
+                return origEnter.apply(this, arguments);
+              },
               configurable: true
             });
           } catch (e) {}
         }
         ['requestFullscreen', 'webkitRequestFullscreen'].forEach(function(name) {
-          if (mediaProto && mediaProto[name]) {
+          [mediaProto, Element.prototype].forEach(function(proto) {
+            if (!proto || !proto[name]) return;
+            const orig = proto[name];
             try {
-              Object.defineProperty(mediaProto, name, {
-                value: function() { return Promise.resolve(); },
+              Object.defineProperty(proto, name, {
+                value: function() {
+                  if (reelLocked()) return Promise.resolve();
+                  return orig.apply(this, arguments);
+                },
                 configurable: true
               });
             } catch (e) {}
-          }
-          if (Element.prototype[name]) {
-            try {
-              Object.defineProperty(Element.prototype, name, {
-                value: function() { return Promise.resolve(); },
-                configurable: true
-              });
-            } catch (e) {}
-          }
+          });
         });
 
         document.addEventListener('webkitbeginfullscreen', function(e) {
+          if (!reelLocked()) return;
           const video = e.target;
           if (video && video.webkitExitFullscreen) {
             try { video.webkitExitFullscreen(); } catch (err) {}
@@ -1236,6 +1479,30 @@ enum ContentFilter {
             depth++;
           }
         }
+        hideNonAccountSearchResults();
+      }
+
+      // R3 backstop only - NOT the primary mechanism. filterSearchPayload()
+      // (see the "search result filtering" section above) strips non-account
+      // results at the data layer before Instagram renders them; this DOM
+      // pass exists only to catch a response shape that intercept didn't
+      // recognize. Hides post/hashtag/place result links and any lingering
+      // "Tags"/"Places"/"Top" result-type tab controls without touching the
+      // search input or account rows.
+      function hideNonAccountSearchResults() {
+        scanRoot().querySelectorAll(
+          'a[href^="/p/"], a[href^="/reel/"], a[href^="/reels/"], ' +
+          'a[href^="/explore/tags/"], a[href^="/explore/locations/"]'
+        ).forEach(function(a) {
+          hide(clickableFor(a) || a);
+        });
+        ['Tags', 'Places', 'Top'].forEach(function(label) {
+          scanRoot().querySelectorAll('span, div, button, a').forEach(function(el) {
+            if (el.children.length !== 0) return;
+            if ((el.textContent || '').trim() !== label) return;
+            hide(clickableFor(el) || el);
+          });
+        });
       }
 
       function fixDirectInbox() {
@@ -1274,6 +1541,7 @@ enum ContentFilter {
       // (cached per shortcode) and swap it in.
       function upgradeDirectPreviews() {
         if (!isTopFrame || !/^\\/direct\\/t\\//.test(location.pathname)) return;
+        const dpr = window.devicePixelRatio || 2;
         document.querySelectorAll('a[href*="/reel/"], a[href*="/reels/"], a[href*="/p/"]').forEach(function(card) {
           const href = card.getAttribute('href') || '';
           const match = href.match(/\\/(reels?|p)\\/([A-Za-z0-9_-]+)/);
@@ -1296,7 +1564,8 @@ enum ContentFilter {
             img.removeAttribute('sizes');
             return;
           }
-          fetch('/api/v1/oembed/?url=' + encodeURIComponent('https://www.instagram.com/p/' + code + '/'), {
+          fetch('/api/v1/oembed/?url=' + encodeURIComponent('https://www.instagram.com/p/' + code + '/') +
+            '&maxwidth=1080', {
             headers: { 'X-IG-App-ID': '936619743392459' },
             credentials: 'include'
           }).then(function(r) { return r.ok ? r.json() : null; })
@@ -1306,7 +1575,9 @@ enum ContentFilter {
               img.src = payload.thumbnail_url;
               img.removeAttribute('srcset');
               img.removeAttribute('sizes');
-              biLog('[dm] upgraded preview ' + code);
+              biLog('[dm] upgraded preview ' + code + ' oembedWH=' +
+                (payload.thumbnail_width || '?') + 'x' + (payload.thumbnail_height || '?') +
+                ' displayW=' + Math.round(bestWidth) + ' dpr=' + dpr);
             }).catch(function() {});
         });
       }
@@ -1343,6 +1614,11 @@ enum ContentFilter {
             logoBox.style.top = '50%';
             logoBox.style.transform = 'translate(-50%, -50%)';
             logoBox.style.zIndex = '2';
+          }
+          // The header logo is decorative here — clicking it must do nothing
+          // (no feed switcher, no scroll-to-top), so make it inert.
+          if (logoBox.style.pointerEvents !== 'none') {
+            logoBox.style.pointerEvents = 'none';
           }
           // Caret sibling: a tiny (<44px) box right after the centered logo box.
           const sib = logoBox.nextElementSibling;
@@ -1410,8 +1686,95 @@ enum ContentFilter {
         }
       }
 
+      function visibleCommentSheet() {
+        function visible(el) {
+          if (!el) return false;
+          const rect = el.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) return false;
+          const computed = getComputedStyle(el);
+          if (computed.display === 'none' || computed.visibility === 'hidden') return false;
+          return rect.bottom > 0 && rect.top < window.innerHeight;
+        }
+
+        function commentInput(scope) {
+          const inputs = scope.querySelectorAll(
+            'textarea[placeholder*="comment" i], textarea[aria-label*="comment" i], ' +
+            'input[placeholder*="comment" i], input[aria-label*="comment" i]'
+          );
+          for (let i = 0; i < inputs.length; i++) {
+            if (visible(inputs[i])) return inputs[i];
+          }
+          return null;
+        }
+
+        function commentsHeading(scope) {
+          const labels = scope.querySelectorAll('h1, h2, h3, [role="heading"], span');
+          for (let i = 0; i < labels.length; i++) {
+            if ((labels[i].textContent || '').trim().toLowerCase() === 'comments' && visible(labels[i])) {
+              return labels[i];
+            }
+          }
+          return null;
+        }
+
+        const dialogs = document.querySelectorAll('[role="dialog"]');
+        for (let i = 0; i < dialogs.length; i++) {
+          const dialog = dialogs[i];
+          if (!visible(dialog)) continue;
+          const signal = commentInput(dialog) || commentsHeading(dialog);
+          if (signal) return { dialog: dialog, signal: signal, fullPage: false };
+        }
+
+        const input = commentInput(document);
+        const heading = commentsHeading(document);
+        if (input && heading && heading.getBoundingClientRect().top < Math.max(180, window.innerHeight * 0.25)) {
+          return { dialog: document.body, signal: heading, fullPage: true };
+        }
+        return null;
+      }
+
+      function installCommentBackRouting() {
+        if (window.__biCommentBackPatched) return;
+        window.__biCommentBackPatched = true;
+        document.addEventListener('click', function(e) {
+          if (!window.__biCommentSheetOpen || !e.target.closest) return;
+          const control = e.target.closest('a[href], [role="button"], button');
+          if (!control) return;
+          const back = e.target.closest('svg[aria-label="Back"]') || control.querySelector('svg[aria-label="Back"]');
+          if (!back) return;
+          e.preventDefault();
+          biLog('[comments] back captured path=' + location.pathname +
+            ' tag=' + control.tagName + ' href=' + (control.getAttribute('href') || 'none'));
+        }, true);
+      }
+
+      let commentCloseTimer = null;
+      function updateCommentSheet() {
+        const active = visibleCommentSheet();
+        if (active) {
+          if (commentCloseTimer) {
+            clearTimeout(commentCloseTimer);
+            commentCloseTimer = null;
+          }
+          if (!window.__biCommentSheetOpen) {
+            window.__biCommentSheetOpen = true;
+            biLog('[comments] open=true path=' + location.pathname + ' history=' + history.length);
+          }
+          return;
+        }
+        if (!window.__biCommentSheetOpen || commentCloseTimer) return;
+        commentCloseTimer = setTimeout(function() {
+          commentCloseTimer = null;
+          if (visibleCommentSheet()) return;
+          window.__biCommentSheetOpen = false;
+          biLog('[comments] open=false');
+          reportNavVisibility();
+        }, 250);
+      }
+
       function computeNavVisible() {
-        return !/^\\/(direct\\/t\\/|stories\\/)/.test(location.pathname);
+        return !window.__biCommentSheetOpen && !/^\\/direct\\/t\\//.test(location.pathname) &&
+          !isImmersiveSurface(shouldLockScroll());
       }
 
       function reportNavVisibility() {
@@ -1477,16 +1840,10 @@ enum ContentFilter {
         const articles = document.querySelectorAll('article');
         if (articles.length === 0) return;
         let hidden = 0;
-        const census = [];
         articles.forEach(function(a) {
-          const h = a.classList.contains('__bi_hidden') || a.classList.contains('__bi_fav_hidden');
-          if (h) hidden++;
-          census.push((articleAuthor(a) || '?') + (h ? '(hid)' : '(shown)'));
+          if (a.classList.contains('__bi_hidden') || a.classList.contains('__bi_fav_hidden')) hidden++;
         });
-        // Log the author + shown/hidden state of every home article whenever it
-        // changes. Tells us if the harvested favorites (frogkekw etc.) actually
-        // rendered but got hidden by the DOM filter, vs never rendered at all.
-        const line = articles.length + ' articles, ' + hidden + ' hidden: ' + census.join(',');
+        const line = articles.length + ' articles, ' + hidden + ' hidden';
         if (window.__biFeedCensus !== line) {
           window.__biFeedCensus = line;
           biLog('[feed] ' + line);
@@ -1542,11 +1899,60 @@ enum ContentFilter {
         return true;
       }
 
+      function colorComponents(bg) {
+        if (!bg || bg === 'transparent') return null;
+        const match = bg.match(/^rgba?\\(([^)]+)\\)$/);
+        if (!match) return null;
+        const parts = match[1].split(',').map(function(value) { return parseFloat(value); });
+        if (parts.length < 3 || parts.some(function(value) { return isNaN(value); })) return null;
+        return { r: parts[0], g: parts[1], b: parts[2], a: parts.length > 3 ? parts[3] : 1 };
+      }
+
+      function compositedPointBackground(x, y) {
+        const stack = document.elementsFromPoint(x, y) || [];
+        const layers = [];
+        for (let i = 0; i < stack.length; i++) {
+          const rect = stack[i].getBoundingClientRect();
+          if (rect.width < window.innerWidth * 0.5) continue;
+          const color = colorComponents(getComputedStyle(stack[i]).backgroundColor);
+          if (!color || color.a <= 0) continue;
+          layers.push(color);
+          if (color.a >= 0.999) break;
+        }
+        if (!layers.length || layers[layers.length - 1].a < 0.999) return null;
+        let result = layers[layers.length - 1];
+        for (let i = layers.length - 2; i >= 0; i--) {
+          const source = layers[i];
+          result = {
+            r: source.r * source.a + result.r * (1 - source.a),
+            g: source.g * source.a + result.g * (1 - source.a),
+            b: source.b * source.a + result.b * (1 - source.a),
+            a: 1
+          };
+        }
+        return 'rgb(' + Math.round(result.r) + ', ' + Math.round(result.g) + ', ' + Math.round(result.b) + ')';
+      }
+
       function currentPageBackground() {
         if (!document.body || !document.documentElement) return null;
-        // The story viewer is full-screen black; IG's own body bg stays dark
-        // grey, leaving the top safe area mismatched. Force pitch black there.
-        if (/^\\/stories\\//.test(location.pathname)) return 'rgb(0, 0, 0)';
+        const sampleXs = [0.2, 0.5, 0.8];
+        const sampleYs = [8, 24, 44];
+        const counts = {};
+        let mostCommon = null;
+        let mostCommonCount = 0;
+        for (let yIndex = 0; yIndex < sampleYs.length; yIndex++) {
+          for (let xIndex = 0; xIndex < sampleXs.length; xIndex++) {
+            const x = Math.floor(window.innerWidth * sampleXs[xIndex]);
+            const bg = compositedPointBackground(x, sampleYs[yIndex]);
+            if (!bg) continue;
+            counts[bg] = (counts[bg] || 0) + 1;
+            if (counts[bg] > mostCommonCount) {
+              mostCommon = bg;
+              mostCommonCount = counts[bg];
+            }
+          }
+        }
+        if (mostCommon) return mostCommon;
         const bodyBg = getComputedStyle(document.body).backgroundColor;
         if (isOpaqueColor(bodyBg)) return bodyBg;
         const htmlBg = getComputedStyle(document.documentElement).backgroundColor;
@@ -1559,17 +1965,12 @@ enum ContentFilter {
           node = node.firstElementChild;
           depth++;
         }
-        const x = Math.floor(window.innerWidth / 2);
-        const stack = document.elementsFromPoint(x, 1) || [];
-        for (let i = 0; i < stack.length; i++) {
-          const bg = getComputedStyle(stack[i]).backgroundColor;
-          if (isOpaqueColor(bg)) return bg;
-        }
         return null;
       }
 
       function reportBackgroundColor() {
         if (!isTopFrame) return;
+        if (/^\\/(stories|reels?)\\//.test(location.pathname) || isImmersiveSurface(shouldLockScroll())) return;
         const bg = currentPageBackground();
         if (!bg) return;
         if (window.__biLastBg !== bg) {
@@ -1634,6 +2035,29 @@ enum ContentFilter {
       }
       window.__biNavigate = navigate;
 
+      // apply() runs a long chain of DOM-mutating passes (hide/lock/fix
+      // functions) on essentially every DOM mutation (see the MutationObserver
+      // below), which fires very often on a busy page like a DM thread
+      // (message status ticks, avatar/story-ring loads, etc.). If one of those
+      // passes mutates something mid-gesture — between touchstart and the
+      // click a tap normally produces — the browser can lose the tap entirely
+      // (a layout shift during an active touch reads as a scroll, not a tap),
+      // which is the likely cause of share-card links needing a second tap to
+      // register. Defer apply() until any in-flight touch has fully finished
+      // (plus one short buffer for the resulting click to dispatch) instead
+      // of running it mid-touch. Passive-only: this never calls
+      // preventDefault, so it cannot itself block or alter a gesture.
+      let touchActive = false;
+      document.addEventListener('touchstart', function() {
+        touchActive = true;
+      }, { capture: true, passive: true });
+      document.addEventListener('touchend', function() {
+        setTimeout(function() { touchActive = false; }, 50);
+      }, { capture: true, passive: true });
+      document.addEventListener('touchcancel', function() {
+        touchActive = false;
+      }, { capture: true, passive: true });
+
       let applyScheduled = false;
       let lastApply = 0;
       function apply() {
@@ -1656,6 +2080,7 @@ enum ContentFilter {
           fixDMShareCardCursor();
           fixHomeHeader();
           removeReservedNavSpace();
+          updateCommentSheet();
           reportNavVisibility();
           reportAvatar();
           reportProfile();
@@ -1671,9 +2096,11 @@ enum ContentFilter {
         if (applyScheduled) return;
         applyScheduled = true;
         const wait = Math.max(0, 300 - (Date.now() - lastApply));
-        setTimeout(function() {
+        function fire() {
+          if (touchActive) { setTimeout(fire, 50); return; }
           requestAnimationFrame(apply);
-        }, wait);
+        }
+        setTimeout(fire, wait);
       }
 
       biLog('[boot] filter running on ' + location.pathname);
@@ -1695,18 +2122,37 @@ enum ContentFilter {
       installHistoryHook();
       installGestureLocks();
       installDMReelClickRouting();
+      installCommentBackRouting();
       preventNativeFullscreen();
       guardLocation();
+      postPresentation(false, isImmersiveSurface(false), 'boot');
       window.__biReapply = scheduleApply;
       window.__biSetFavorites = setFavorites;
       setFavorites(window.__biFavorites, window.__biFavoritesEnabled);
 
       const observer = new MutationObserver(function(mutations) {
+        let viewerSurfaceChanged = false;
         for (let i = 0; i < mutations.length; i++) {
+          if (mutations[i].type === 'attributes' && /^\\/(stories|reels?)\\//.test(location.pathname)) {
+            viewerSurfaceChanged = true;
+          }
+          const removed = mutations[i].removedNodes;
+          for (let j = 0; j < removed.length; j++) {
+            const node = removed[j];
+            if (!node || node.nodeType !== 1) continue;
+            if (node.matches('video, img, canvas, [role="dialog"]') ||
+                (node.querySelector && node.querySelector('video, img, canvas, [role="dialog"]'))) {
+              viewerSurfaceChanged = true;
+            }
+          }
           const added = mutations[i].addedNodes;
           for (let j = 0; j < added.length; j++) {
             const node = added[j];
             if (!node || node.nodeType !== 1) continue;
+            if (node.matches('video, img, canvas, [role="dialog"]') ||
+                (node.querySelector && node.querySelector('video, img, canvas, [role="dialog"]'))) {
+              viewerSurfaceChanged = true;
+            }
             if (node.tagName === 'ARTICLE') {
               filterArticle(node);
             } else if (node.querySelectorAll) {
@@ -1714,6 +2160,17 @@ enum ContentFilter {
               for (let k = 0; k < articles.length; k++) filterArticle(articles[k]);
             }
           }
+        }
+        if (viewerSurfaceChanged &&
+            (/^\\/(direct|stories|reels?)\\//.test(location.pathname) || activeStorySurface || activeReelSurface)) {
+          requestAnimationFrame(function() {
+            updateScrollLock();
+            reportBackgroundColor();
+          });
+          setTimeout(function() {
+            updateScrollLock();
+            reportBackgroundColor();
+          }, 50);
         }
         scheduleApply();
       });
@@ -1821,7 +2278,16 @@ enum ContentFilter {
     }
     if (!template) { return harvestJson; }
     const seen = new Set();
-    const ids = {};
+    // Known ids of authors already present in the streamed edges — used ONLY
+    // as a lookup shortcut below (skip re-fetching an id we already have).
+    // This must NOT by itself make someone a density-fetch target: the
+    // streamed favorites feed can still legitimately contain an account
+    // that's no longer one of the app's current picks (e.g. real Instagram
+    // Favorites the app hasn't been able to unfavorite yet), and topping
+    // that account up with MORE profile posts would be compounding exactly
+    // the wrong thing. Density targets are strictly `usernames` (the app's
+    // current picks) below.
+    const edgeIds = {};
     edges.forEach(function(e) {
       try {
         const m = e.node.media;
@@ -1829,13 +2295,14 @@ enum ContentFilter {
         if (id != null) seen.add(String(id));
         const u = m.user;
         if (u && u.username && (u.pk || u.id)) {
-          ids[String(u.username).toLowerCase()] = String(u.pk || u.id);
+          edgeIds[String(u.username).toLowerCase()] = String(u.pk || u.id);
         }
       } catch (err) {}
     });
+    const ids = {};
     for (const name of (usernames || [])) {
       const key = String(name).toLowerCase();
-      if (ids[key]) continue;
+      if (edgeIds[key]) { ids[key] = edgeIds[key]; continue; }
       try {
         const r = await fetch('/api/v1/users/web_profile_info/?username=' + encodeURIComponent(key), {
           credentials: 'include', headers: { 'X-IG-App-ID': APP_ID }
@@ -1875,6 +2342,21 @@ enum ContentFilter {
         const edge = JSON.parse(JSON.stringify(template));
         const tmedia = edge.node.media;
         for (const k in tmedia) { if (!(k in item)) item[k] = null; }
+        // The per-profile media endpoint doesn't return friendship_status
+        // nested under item.user, so the fill-in above would leave it null
+        // there — which is why the star badge was missing on these appended
+        // posts (Instagram's own star render reads media.user.friendship_status,
+        // NOT a media-level field). We already know this author is a current
+        // favorite pick (that's the only reason we fetched their profile), so
+        // set it directly at the correct nesting level instead of leaving it
+        // null.
+        if (item.user) {
+          if (!item.user.friendship_status) {
+            item.user.friendship_status = { following: true, is_feed_favorite: true };
+          } else if (item.user.friendship_status.is_feed_favorite == null) {
+            item.user.friendship_status.is_feed_favorite = true;
+          }
+        }
         edge.node.media = item;
         if ('cursor' in edge) edge.cursor = 'bi-' + String(mid);
         appended.push(edge);
@@ -1888,66 +2370,5 @@ enum ContentFilter {
     data.appended = appended.length;
     data.fetch = stats.join(' ');
     return JSON.stringify(data);
-    """
-
-    /// Injected at document-start into the hidden harvest webview. Captures the
-    /// favorites feed edges + page_info from every feed XHR into
-    /// window.__biHarvestEdges / window.__biHarvestPageInfo, and records the
-    /// pagination request (url/body/headers) so the harvest script can replay it
-    /// with advancing cursors to page deep server-side.
-    static let harvestCollectorScript = """
-    (function() {
-      if (window.__biHarvestPatched) return;
-      window.__biHarvestPatched = true;
-      window.__biHarvestEdges = [];
-      window.__biHarvestPageInfo = null;
-      window.__biHarvestPagReq = null;
-      const seen = new Set();
-      function collect(text) {
-        if (!text || text.indexOf('feed__timeline') === -1) return;
-        let p; try { p = JSON.parse(text); } catch (e) { return; }
-        (function walk(o, d) {
-          if (!o || typeof o !== 'object' || d > 16) return;
-          for (const k in o) {
-            const v = o[k];
-            if (!v || typeof v !== 'object') continue;
-            if (k.indexOf('feed__timeline') !== -1 && Array.isArray(v.edges)) {
-              v.edges.forEach(function(e) {
-                let id = null; try { id = e.node.media.pk || e.node.media.code || e.node.media.id; } catch (_) {}
-                if (id != null && seen.has(id)) return;
-                if (id != null) seen.add(id);
-                window.__biHarvestEdges.push(e);
-              });
-              if (v.page_info) window.__biHarvestPageInfo = v.page_info;
-            }
-            walk(v, d + 1);
-          }
-        })(p, 0);
-      }
-      const oOpen = XMLHttpRequest.prototype.open;
-      const oSend = XMLHttpRequest.prototype.send;
-      const oSet = XMLHttpRequest.prototype.setRequestHeader;
-      XMLHttpRequest.prototype.setRequestHeader = function(k, v) {
-        if (!this.__biH) this.__biH = {};
-        this.__biH[k] = v;
-        return oSet.apply(this, arguments);
-      };
-      XMLHttpRequest.prototype.open = function(method, url) {
-        this.__biU = String(url || '');
-        return oOpen.apply(this, arguments);
-      };
-      XMLHttpRequest.prototype.send = function(body) {
-        const x = this;
-        if (/graphql|\\/api\\/v1\\/feed\\//.test(x.__biU || '')) {
-          if (typeof body === 'string' && body.indexOf('PolarisFeedRootPaginationCachedQuery') !== -1) {
-            window.__biHarvestPagReq = { url: x.__biU, body: String(body), headers: x.__biH || {} };
-          }
-          x.addEventListener('load', function() {
-            try { collect(x.responseText); } catch (e) {}
-          });
-        }
-        return oSend.apply(this, arguments);
-      };
-    })();
     """
 }

@@ -1,0 +1,12 @@
+[
+  {
+    "trigger": {
+      "url-filter": ".*",
+      "if-domain": ["*instagram.com"]
+    },
+    "action": {
+      "type": "css-display-none",
+      "selector": "a[href=\"/reels/\"], a[href=\"/explore/\"], svg[aria-label=\"Reels\"]"
+    }
+  }
+]
