@@ -560,6 +560,10 @@ enum ContentFilter {
               if (did && !window.__biSSRSpliced) {
                 window.__biSSRSpliced = true;
                 biLog('[favsplice] spliced favorites into SSR feed data');
+                if (isTopFrame && !window.__biFavReadyPosted) {
+                  window.__biFavReadyPosted = true;
+                  try { webkit.messageHandlers.biFavReady.postMessage(true); } catch (e) {}
+                }
               }
             }
           } catch (e) {}
@@ -645,6 +649,12 @@ enum ContentFilter {
         if (isSearchLike && filterSearchPayload(payload)) {
           changed = true;
           biLog('[search] filtered search results to accounts-only (xhr)');
+        }
+        if (isFeedLike && window.__biNativeFavMode) {
+          if (location.pathname === '/' && !window.__biFavReadyPosted) {
+            window.__biFavReadyPosted = true;
+            try { webkit.messageHandlers.biFavReady.postMessage(true); } catch (e) {}
+          }
         }
         // In native-favorites mode IG serves the favorites feed itself; never
         // rewrite a feed response there or Relay throws and the feed spins

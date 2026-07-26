@@ -39,6 +39,9 @@ const dom = new JSDOM(
       // --- native preamble (WebViewStore.installUserScripts) ---
       window.__biFavorites = ['favedaccount', 'someoneelse'];
       window.__biFavoritesEnabled = true;
+      window.__biFavEdgesPreload = JSON.stringify({
+        edges: [{ node: { media: { pk: '100', user: { username: 'favedaccount' }, image_versions2: { candidates: [{ url: 'https://example.com/a.jpg' }] } } } }]
+      });
 
       // --- WKScriptMessageHandler shim ---
       const post = (name) => (body) => logs.push([name, body]);
@@ -196,6 +199,13 @@ setTimeout(() => {
 
     // restore feed route for the remaining stateful checks below.
     navigate('/');
+
+    // --- SSR splice biFavReady post check ---
+    // Simulating Instagram's bootloader parsing streamed SSR JSON containing feed__timeline
+    window.JSON.parse(JSON.stringify({ data: { feed__timeline: { edges: [] } } }));
+    check('SSR feed splice posts biFavReady',
+      logs.some((l) => l[0] === 'biFavReady'),
+      'logs: ' + JSON.stringify(logs.filter((l) => l[0] === 'biFavReady')));
 
     // Native live-update path (WebViewStore.applyFavoritesSelection).
     let liveUpdateOk = true;
