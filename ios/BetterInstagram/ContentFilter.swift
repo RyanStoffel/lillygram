@@ -19,8 +19,14 @@ enum ContentFilter {
       const style = document.createElement('style');
       style.id = '__bi_filter_style';
       style.textContent = `
-        html, body { background-color: rgb(12, 16, 20) !important; }
-        section[role="dialog"], div[role="dialog"], section[role="region"] { background-color: rgb(12, 16, 20) !important; }
+        @media (prefers-color-scheme: dark) {
+          html, body { background-color: rgb(12, 16, 20) !important; }
+          section[role="dialog"], div[role="dialog"], section[role="region"] { background-color: rgb(12, 16, 20) !important; }
+        }
+        @media (prefers-color-scheme: light) {
+          html, body { background-color: rgb(255, 255, 255) !important; }
+          section[role="dialog"], div[role="dialog"], section[role="region"] { background-color: rgb(255, 255, 255) !important; }
+        }
         a[href="/reels/"] { display: none !important; }
         a[href="/explore/"] { display: none !important; }
         svg[aria-label="Reels"] { display: none !important; }
@@ -1980,9 +1986,15 @@ enum ContentFilter {
         return null;
       }
 
+      function defaultPageColor() {
+        return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
+          ? 'rgb(12, 16, 20)'
+          : 'rgb(255, 255, 255)';
+      }
+
       function reportBackgroundColor() {
         if (!isTopFrame) return;
-        const bg = currentPageBackground() || 'rgb(12, 16, 20)';
+        const bg = currentPageBackground() || defaultPageColor();
         if (!bg) return;
         if (window.__biLastBg !== bg) {
           window.__biLastBg = bg;
