@@ -28,6 +28,7 @@ struct FavoritesPickerView: View {
     @State private var isLoadingFollowing = false
     @State private var isSearching = false
     @State private var didSave = false
+    @State private var showSettings = false
 
     var body: some View {
         NavigationStack {
@@ -38,6 +39,24 @@ struct FavoritesPickerView: View {
                 profileList
                 footer
             }
+            .toolbar {
+                if mode == .editor {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            showSettings = true
+                        } label: {
+                            Image(systemName: "gearshape")
+                                .font(.body.weight(.medium))
+                                .foregroundStyle(.secondary)
+                        }
+                        .accessibilityLabel("Settings and Support")
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showSettings) {
+            AppSettingsView()
         }
         // The presenting view tints everything .primary (white in dark mode),
         // which would make the prominent Save button white-on-white.
@@ -168,6 +187,33 @@ struct FavoritesPickerView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             }
+
+            if mode == .editor {
+                HStack(spacing: 12) {
+                    Button("Report a Bug") {
+                        showSettings = true
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                    Text("•")
+                        .font(.footnote)
+                        .foregroundStyle(.tertiary)
+
+                    Link("Privacy", destination: URL(string: "https://betterinstagram.app/privacy")!)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    Text("•")
+                        .font(.footnote)
+                        .foregroundStyle(.tertiary)
+
+                    Link("Terms", destination: URL(string: "https://betterinstagram.app/terms")!)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, 4)
+            }
         }
         .padding(.horizontal)
         .padding(.bottom, 12)
@@ -252,5 +298,132 @@ struct FavoritesPickerView: View {
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
+    }
+}
+
+/// Settings and support sheet for bug reporting and legal terms.
+struct AppSettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var showBugReport = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Support") {
+                    Button {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        showBugReport = true
+                    } label: {
+                        Label("Report a Bug", systemImage: "ladybug")
+                            .foregroundStyle(.primary)
+                    }
+                }
+
+                Section("Legal") {
+                    Link(destination: URL(string: "https://betterinstagram.app/privacy")!) {
+                        Label("Privacy Policy", systemImage: "hand.raised")
+                            .foregroundStyle(.primary)
+                    }
+                    Link(destination: URL(string: "https://betterinstagram.app/terms")!) {
+                        Label("Terms of Service", systemImage: "doc.text")
+                            .foregroundStyle(.primary)
+                    }
+                }
+
+                Section("About") {
+                    HStack {
+                        Text("Version")
+                        Spacer()
+                        Text("1.0 (1)")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Settings & Support")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+            .sheet(isPresented: $showBugReport) {
+                BugReportView()
+            }
+        }
+    }
+}
+
+/// Native bug reporting interface.
+struct BugReportView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var bugDescription = ""
+    @State private var didSend = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextEditor(text: $bugDescription)
+                        .frame(minHeight: 120)
+                } header: {
+                    Text("Describe the issue")
+                } footer: {
+                    Text("Please describe what happened and how to reproduce it.")
+                }
+
+                Section("System Information") {
+                    HStack {
+                        Text("App Version")
+                        Spacer()
+                        Text("1.0 (1)")
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("iOS Version")
+                        Spacer()
+                        Text(UIDevice.current.systemVersion)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Report a Bug")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Send") {
+                        sendReport()
+                    }
+                    .disabled(bugDescription.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .alert("Report Ready", isPresented: $didSend) {
+                Button("OK") { dismiss() }
+            } message: {
+                Text("Thank you for helping improve BetterInstagram!")
+            }
+        }
+    }
+
+    private func sendReport() {
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        let body = """
+        Bug Description:
+        \(bugDescription)
+
+        ---
+        App Version: 1.0 (1)
+        iOS Version: \(UIDevice.current.systemVersion)
+        Device: \(UIDevice.current.model)
+        """
+        let encodedBody = body.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        if let mailURL = URL(string: "mailto:support@betterinstagram.app?subject=BetterInstagram%20Bug%20Report&body=\(encodedBody)") {
+            UIApplication.shared.open(mailURL)
+        }
+        didSend = true
     }
 }
