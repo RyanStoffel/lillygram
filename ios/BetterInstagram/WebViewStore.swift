@@ -253,7 +253,7 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         webView.removeInputAccessoryView()
         if target == .home {
             let refresh = UIRefreshControl()
-            refresh.tintColor = UIColor.white.withAlphaComponent(0.7)
+            refresh.tintColor = .secondaryLabel
             refresh.addTarget(self, action: #selector(handlePullToRefresh), for: .valueChanged)
             webView.scrollView.refreshControl = refresh
             webView.scrollView.alwaysBounceVertical = true
@@ -1043,14 +1043,23 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
     // MARK: - Pull to refresh (home)
 
-    /// Pull down on the home feed → re-harvest favorites and reload home. The
-    /// refresh spinner ends when the fresh favorites feed renders (biFavReady)
-    /// or after a safety timeout.
+    /// Pull down on the home feed → re-harvest favorites and reload home.
+    /// Fires a haptic the instant the pull commits (matching the moment
+    /// UIRefreshControl itself starts spinning), then leaves that native
+    /// spinner visible under the header briefly before the splash takes over
+    /// to mask the rebuild — so the user sees pull → spin → splash, not an
+    /// instant cut. The refresh spinner ends when the fresh favorites feed
+    /// renders (biFavReady) or after a safety timeout.
     @objc private func handlePullToRefresh() {
+        guard !refreshInFlight else { return }
         refreshInFlight = true
-        refreshingViaPull = true
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         print("[BI] pull-to-refresh: re-harvest + reload home")
         reharvestAndReloadHome()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self, self.refreshInFlight else { return }
+            self.refreshingViaPull = true
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in
             self?.endRefresh()
         }

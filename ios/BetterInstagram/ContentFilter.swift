@@ -42,6 +42,8 @@ enum ContentFilter {
         a, button, [role="button"], [role="link"], input, select, textarea { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
         #__bi_star_btn { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); z-index: 3; background: none; border: 0; padding: 8px; display: flex; align-items: center; }
         @keyframes __bi_rot { to { transform: rotate(360deg); } }
+        @keyframes __bi_pop_in { from { transform: scale(0.85); opacity: 0.4; } to { transform: scale(1); opacity: 1; } }
+        .__bi_reel_pop { animation: __bi_pop_in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1) both; transform-origin: center center; }
       `;
 
       function biLog(msg) {
@@ -1053,7 +1055,16 @@ enum ContentFilter {
         updateScrollLock();
         reportNavVisibility();
         reportBackgroundColor();
-        scheduleApply();
+        if (location.pathname === '/') {
+          // Returning to the feed (closing a story, a reel, or comments) can
+          // bring a burst of freshly (re)rendered article nodes that haven't
+          // been filtered yet. Re-apply right away instead of waiting out the
+          // normal throttle window, so any unfiltered flash is as short as
+          // possible instead of visible for up to scheduleApply's wait.
+          requestAnimationFrame(apply);
+        } else {
+          scheduleApply();
+        }
       }
 
       function installHistoryHook() {
@@ -1107,6 +1118,20 @@ enum ContentFilter {
         });
       }
 
+      // A reel opened from a DM share card is presented in an overlay dialog
+      // that Instagram's own web client slides in from the right, like a page
+      // navigation. That reads as a browser tab, not a native reel viewer, so
+      // on that one path (a reel opened while inside /direct/) we play a
+      // short scale-in instead. One-shot per dialog element (dataset guard) so
+      // it never replays on later mutations of the same still-open viewer.
+      function maybeAnimateReelEntry(video) {
+        if (!video || !/^\\/direct\\//.test(location.pathname)) return;
+        const dialog = video.closest('[role="dialog"]') || scrollLockContainer(video);
+        if (!dialog || dialog.dataset.biPopped) return;
+        dialog.dataset.biPopped = '1';
+        dialog.classList.add('__bi_reel_pop');
+      }
+
       function updateScrollLock() {
         const lock = shouldLockScroll();
         const immersive = isImmersiveSurface(lock);
@@ -1120,6 +1145,7 @@ enum ContentFilter {
           if (container && !container.classList.contains('__bi_lockedscroll')) {
             container.classList.add('__bi_lockedscroll');
           }
+          maybeAnimateReelEntry(video);
         } else {
           document.querySelectorAll('.__bi_lockedscroll').forEach(function(el) {
             el.classList.remove('__bi_lockedscroll');
@@ -1602,6 +1628,85 @@ enum ContentFilter {
         });
       }
 
+      // DM thread header: Instagram lays the back button, avatar/name control
+      // and the call/video/info icons out with flex space-between, so an
+      // unequal-width icon cluster on the right visibly drags the name off
+      // center. Absolutely center the name control instead of fighting the
+      // flex math (same technique as the home logo below).
+      function fixDMHeader() {
+        if (!isTopFrame || !/^\\/direct\\/t\\//.test(location.pathname)) return;
+        const back = document.querySelector('svg[aria-label="Back"]');
+        if (!back) return;
+        let header = back.parentElement;
+        let depth = 0;
+        while (header && header !== document.body && depth < 12) {
+          const r = header.getBoundingClientRect();
+          if (r.width >= window.innerWidth * 0.9 && r.height > 0 && r.height < 120 &&
+              !header.querySelector('article')) break;
+          header = header.parentElement;
+          depth++;
+        }
+        if (!header || header === document.body) return;
+        if (getComputedStyle(header).position === 'static') header.style.position = 'relative';
+
+        const backControl = clickableFor(back) || back.parentElement;
+        // The name/avatar control: the header's own clickable child with real
+        // text content that isn't the back button and isn't an icon-only
+        // control (call/video/info have an svg and no text).
+        let title = null;
+        const controls = header.querySelectorAll(':scope > *, :scope > * > *');
+        for (let i = 0; i < controls.length; i++) {
+          const el = controls[i];
+          if (el === backControl || (backControl && backControl.contains(el))) continue;
+          if (el.contains(back)) continue;
+          const text = (el.textContent || '').trim();
+          if (!text) continue;
+          if (el.querySelectorAll('svg').length > 1) continue;
+          if (!title || text.length > (title.textContent || '').trim().length) title = el;
+        }
+        if (!title) return;
+        if (title.dataset.biDmCentered !== '1') {
+          title.dataset.biDmCentered = '1';
+          // Unlike the decorative home logo, this control still opens thread
+          // details — keep it tappable, just recentered.
+          title.style.position = 'absolute';
+          title.style.left = '50%';
+          title.style.top = '50%';
+          title.style.transform = 'translate(-50%, -50%)';
+          title.style.maxWidth = '55%';
+          title.style.textAlign = 'center';
+          if (!window.__biDMHeaderFixLogged) {
+            window.__biDMHeaderFixLogged = true;
+            biLog('[header] dm title centered');
+          }
+        }
+      }
+
+      // DM thread message list scrolls inside its own container (fixed header
+      // + fixed composer), which our outer webview-level bottom clearance
+      // never reaches — so the last message(s) can end up hidden behind the
+      // floating native tab bar with nowhere further to scroll. Give that
+      // inner container real bottom scroll room once, idempotently.
+      let dmScrollFixContainer = null;
+      function fixDirectThreadScroll() {
+        if (!isTopFrame || !/^\\/direct\\/t\\//.test(location.pathname)) return;
+        if (dmScrollFixContainer && dmScrollFixContainer.isConnected) return;
+        let container = null;
+        let maxOverflow = 0;
+        scanRoot().querySelectorAll('div').forEach(function(node) {
+          if (node.clientHeight < 120) return;
+          const cs = getComputedStyle(node);
+          if (cs.overflowY !== 'auto' && cs.overflowY !== 'scroll') return;
+          const overflow = node.scrollHeight - node.clientHeight;
+          if (overflow > maxOverflow) { maxOverflow = overflow; container = node; }
+        });
+        if (!container) return;
+        dmScrollFixContainer = container;
+        container.style.paddingBottom = '28px';
+        container.style.overscrollBehaviorY = 'contain';
+        biLog('[dm] extended thread scroll container');
+      }
+
       // Home header: center the Instagram logo and add a favorites star on
       // the left (plus/heart stay on the right where IG puts them). The star
       // opens the native favorites editor via the biFavEdit message.
@@ -1623,11 +1728,21 @@ enum ContentFilter {
         if (getComputedStyle(header).position === 'static') header.style.position = 'relative';
 
         // The logo lives inside a small clickable control. IG sometimes renders
-        // a feed-switcher CARET as a SEPARATE svg sibling next to the logo's box
-        // (NOT inside it). Hide only that caret, then center the logo box exactly
-        // as before (guarded so a shared icon row is never dragged along).
+        // a feed-switcher CARET either as a separate svg sibling next to the
+        // logo's box, or nested inside the same box alongside the logo — both
+        // observed live. Identify hides/centers by the logo's own identity
+        // instead of an "exactly one svg" count, so a transient extra icon
+        // (badge, caret, anything) can never skip the fix and leave the logo
+        // unstyled for a pass (the previous count-gate's failure mode, seen as
+        // the logo snapping left or a caret flashing on screen).
         const logoBox = logo.closest('a, [role="link"], [role="button"], button') || logo.parentElement;
-        if (logoBox.querySelectorAll('svg').length === 1 && !logoBox.querySelector('article')) {
+        if (!logoBox.querySelector('article')) {
+          // Hide any svg sharing the box with the logo that isn't the logo
+          // itself (a nested caret/badge).
+          logoBox.querySelectorAll('svg').forEach(function(svg) {
+            if (svg === logo) return;
+            if (svg.style.display !== 'none') svg.style.display = 'none';
+          });
           if (logoBox.style.position !== 'absolute') {
             logoBox.style.position = 'absolute';
             logoBox.style.left = '50%';
@@ -1640,7 +1755,8 @@ enum ContentFilter {
           if (logoBox.style.pointerEvents !== 'none') {
             logoBox.style.pointerEvents = 'none';
           }
-          // Caret sibling: a tiny (<44px) box right after the centered logo box.
+          // Caret sibling: a tiny (<44px) box right after the centered logo box,
+          // rendered outside it rather than nested inside.
           const sib = logoBox.nextElementSibling;
           if (sib && sib.querySelector && sib.querySelector('svg') &&
               !sib.querySelector('article') &&
@@ -2120,6 +2236,8 @@ enum ContentFilter {
           if (isSearch) fixSearchPage();
           if (isDirect) {
             fixDirectInbox();
+            fixDMHeader();
+            fixDirectThreadScroll();
             fixDirectMediaQuality();
             upgradeDirectPreviews();
             fixDMShareCardCursor();

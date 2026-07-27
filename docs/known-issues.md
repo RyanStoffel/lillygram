@@ -5,6 +5,84 @@ as issues are fixed or found.
 
 ---
 
+## 0. First on-device polish pass (2026-07-26)
+
+**Requirement:** R4. **Status:** implemented, pending on-device verification.
+
+A real-device pass surfaced a cluster of jank/correctness issues. Note: the two
+commits that preceded this one (`ce2d8eb`, `1f5c977`) claimed to fix several of
+these (watchdog reloads, header stability, DM header/scroll, DM reel pop) but
+their actual diffs only touched an Xcode asset-catalog setting and the star
+button's icon/label — none of the described JS/Swift changes were ever made.
+This entry is the real implementation.
+
+**Header logo instability ("goes left" / caret flashes).** `fixHomeHeader()`
+gated both centering the logo box *and* hiding its caret sibling behind
+`logoBox.querySelectorAll('svg').length === 1`. Any transient extra svg in
+that box (a badge, a nested caret IG sometimes renders there instead of as a
+sibling) failed the count check and skipped the whole block for that pass —
+leaving the logo unstyled (visually "snapped left") and the caret unhidden
+until a later pass happened to see exactly one svg again. Fixed: centering and
+caret-hiding are now identity-based ("hide every svg in the box that isn't the
+known logo node") instead of count-gated, so a transient extra icon can never
+skip the fix.
+
+**DM header username not centered.** No DM-specific header handling existed.
+Added `fixDMHeader()` (thread route only): finds the header via the same
+bounding-rect walk `fixHomeHeader()` uses (from the "Back" icon instead of the
+logo), identifies the title control as the header's clickable child with real
+text that isn't the back button or an icon-only control, and absolutely
+centers it — the same technique as the logo, chosen because the header's own
+flex layout visibly favors whichever side (back vs. call/video/info icons) is
+narrower. Left tappable (unlike the decorative home logo) since it opens
+thread details.
+
+**DM thread can't scroll all the way down.** The message list scrolls inside
+its own inner container (fixed header + fixed composer around it), which the
+webview-level `contentInset.bottom` clearance (reserved for the floating
+native tab bar) never reaches — so the last message(s) could end up hidden
+behind the tab bar with nothing left to scroll. Added `fixDirectThreadScroll()`
+(thread route only): finds the tallest actually-overflowing `overflow-y:
+auto/scroll` container and gives it real bottom padding, once, idempotently.
+
+**DM reel opens by sliding in from the right.** A reel opened from a DM share
+card renders in Instagram's own overlay dialog, which its web client
+animates like a page navigation (slide from the right) rather than a native
+viewer. Added a one-shot `__bi_reel_pop` scale/opacity CSS animation, applied
+to that dialog the moment the DM-scoped reel lock engages (`updateScrollLock`
+→ `maybeAnimateReelEntry`), so it pops from center instead.
+
+**Home feed appears to "refresh itself" on leaving a story or comments.** Ruled
+out the JS feed watchdog as the cause: `armFeedWatchdog()` sets
+`window.__biWatchArmed` once per real page load and never rearms on SPA route
+changes (closing a story/comments doesn't reload the page), so it cannot be
+responsible for a *repeated*, every-time flash. The likely mechanism is
+Re-rendered/re-virtualized feed article nodes being briefly unfiltered after
+Instagram's own client remounts the feed route on return to `/`, until the
+next `apply()` pass re-hides them. Mitigated by making `onRouteChange()` run
+`apply()` immediately (via `requestAnimationFrame`, bypassing the normal
+throttle wait) specifically when the route lands back on `/`, shrinking that
+window as much as possible from our side. **Not fully diagnosed** — this may
+partly be Instagram's own web client re-fetching/remounting the feed on
+navigation back (arguably inherent, not introduced by the wrapper). Needs a
+follow-up device pass watching `[BI-DEBUG]`/`[feed]`/`[present]` logs timed
+around a story/comments close to confirm whether the perceived "refresh" is
+purely the DOM-filter flash (now shortened) or an actual navigation/reload.
+
+**Pull-to-refresh.** Added a `.medium` haptic the instant the pull commits
+(previously none), delayed showing the full-screen splash by 0.4s so the
+native `UIRefreshControl` spinner is visibly spinning under the header first
+(previously the splash could cover it almost immediately), and switched the
+spinner tint from a hardcoded white to `.secondaryLabel` for light-mode
+correctness. Also guarded `handlePullToRefresh()` against re-entry.
+
+**Still open / not addressed this pass:** general "feels slow" — `apply()` is
+already route-scoped (contrary to the handoff doc's claim it wasn't); a real
+fix needs on-device profiling (Instruments Time Profiler during feed scroll)
+to find the actual hot path rather than guessing.
+
+---
+
 ## 1. Favorites feed regression — home feed spins / renders too few  ⚠️ TOP PRIORITY
 
 **Requirement:** R1. **Status:** RESOLVED (2026-07-14, confirmed on device — favorites render).
