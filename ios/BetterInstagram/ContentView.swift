@@ -151,8 +151,10 @@ struct ContentView: View {
     /// re-saving favorites, so it shows the update splash.
     private var activeSplash: SplashKind? {
         guard store.isLoggedIn, favoritesStore.isFilterEnabled else { return nil }
-        // Pull-to-refresh shows the branded launch splash over the rebuild.
-        if store.refreshingViaPull { return .launch }
+        // Keep the native refresh spinner and current document visible first;
+        // only cover the page once the delayed rebuild actually begins.
+        if store.refreshPhase == .pullCommitted { return nil }
+        if store.refreshPhase == .rebuilding { return .launch }
         // A just-tapped Save forces the update splash immediately, even before
         // the feed-ready flag has flipped (it's still stale-true for a moment).
         if resaveRequested { return .resave }
@@ -241,7 +243,7 @@ struct ContentView: View {
         Group {
             if createdTabs.contains(target) {
                 WebViewContainer(webView: store.webView(for: target))
-                    .ignoresSafeArea(edges: reduceTransparency ? [] : .bottom)
+                    .ignoresSafeArea(edges: !reduceTransparency && isTabBarVisible ? .bottom : [])
             } else {
                 // Shown for the instant it takes to create+load the webview on
                 // this tab's first visit only; already-created tabs never see it.

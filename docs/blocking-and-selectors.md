@@ -62,6 +62,16 @@ A reel opened from a DM plays, but reel-chaining is disabled:
   lock releases); and SPA navigation from one reel permalink to a *different*
   one is swallowed. Back/exit stays untouched.
 
+**DM reel entry presentation (2026-07-27, pending device confirmation).** The
+trusted share-card activation sets a short-lived pending flag before Instagram
+receives the forwarded click/navigation (persisted across a resulting document
+load). While pending, the main MutationObserver hides the first mounted reel
+video/dialog in the same mutation microtask, waits for stable near-fullscreen
+geometry, and then reveals it with a short centered scale/opacity transition.
+A 400 ms hard fallback always reveals the surface, and Reduce Motion skips the
+entire gate. `[dm-pop] ancestors=...` captures rects, transforms, transitions,
+and active animations to identify Instagram's actual slide owner if it remains.
+
 **DM share-card single tap (resolved and confirmed 2026-07-22).** Instagram Web
 requires two taps on the same shared reel in both WKWebView and mobile Safari.
 Live diagnostics established the actual cause and card shape: the first trusted
@@ -139,10 +149,13 @@ proposing.
   / Reels" units. `filterArticle()` also hides `Sponsored`/`Ad` articles and (for
   R1) non-favorite authors on the home path.
 - `fixHomeHeader()` centers the Instagram logo, injects the `#__bi_star_btn`
-  favorites button on the left, and hides Instagram's feed-switcher **caret**
-  sibling. ⚠️ Keep the **conservative** version (`logoBox.querySelectorAll('svg')
-  .length === 1` guard + hide a tiny `<44px` caret sibling); an aggressive
-  svg-hiding rewrite broke rendering.
+  controls button on the left, and hides Instagram's feed-switcher **caret**.
+  The full logo-box invariant (position/left/top/transform/z-index/pointer
+  events) is reasserted each pass. The current caret fallback remains geometric:
+  hide small SVGs near the verified header center while excluding the logo,
+  BetterInstagram control, and article content. It is deliberately not broadened
+  further until bounded `[header-scan]` device captures identify the current
+  sticky variants.
 - `currentPageBackground()` samples and composites Instagram's visible top-edge
   layers for each webview, including translucent header materials rather than
   falling through to the opaque black page underneath. Direct inboxes and
@@ -162,6 +175,9 @@ proposing.
   the tab bar.
 - `fixDirectMediaQuality()` / `upgradeDirectPreviews()` swap DM share-card
   preview `<img>`s to their largest `srcset` candidate (R4: no blurry previews).
+- Feed marker mutation suppression ignores only BetterInstagram marker
+  additions. If React removes a `__bi_*` hide marker, the observer immediately
+  re-filters the owning article and records a bounded `[feed-remount]` capture.
 
 ## Fragile hooks reference
 

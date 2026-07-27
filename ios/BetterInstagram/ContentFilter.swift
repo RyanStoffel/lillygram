@@ -15,6 +15,9 @@ enum ContentFilter {
       const preRouteViewerGeometry = new WeakMap();
       let activeStorySurface = null;
       let activeReelSurface = null;
+      window.__biVersion = 'device-polish-v2';
+      const documentID = Math.round((window.performance && window.performance.timeOrigin) || Date.now()) + '-' +
+        Math.random().toString(36).slice(2, 8);
 
       const style = document.createElement('style');
       style.id = '__bi_filter_style';
@@ -44,13 +47,17 @@ enum ContentFilter {
         @keyframes __bi_rot { to { transform: rotate(360deg); } }
       `;
 
-      function biLog(msg) {
-        if (!isTopFrame) return;
+      function postLog(msg) {
         try {
           if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.biLog) {
             window.webkit.messageHandlers.biLog.postMessage(String(msg));
           }
         } catch (e) {}
+      }
+
+      function biLog(msg) {
+        if (!isTopFrame) return;
+        postLog(msg);
       }
 
       function ensureStyleInjected() {
@@ -67,6 +74,24 @@ enum ContentFilter {
 
       function scanRoot() {
         return document.querySelector('main') || document.body || document;
+      }
+
+      const diagnosticNodeIDs = new WeakMap();
+      let diagnosticNodeSequence = 0;
+      function diagnosticNodeID(node) {
+        if (!node) return 0;
+        if (!diagnosticNodeIDs.has(node)) diagnosticNodeIDs.set(node, ++diagnosticNodeSequence);
+        return diagnosticNodeIDs.get(node);
+      }
+
+      function shortAncestry(node, limit) {
+        const values = [];
+        for (let depth = 0; node && node !== document.body && depth < (limit || 4); depth++) {
+          values.push(node.tagName + '#' + diagnosticNodeID(node) +
+            (node.getAttribute && node.getAttribute('role') ? '[role=' + node.getAttribute('role') + ']' : ''));
+          node = node.parentElement;
+        }
+        return values.join('>');
       }
 
       // ---- route helpers -------------------------------------------------
@@ -578,6 +603,10 @@ enum ContentFilter {
         window.fetch = function(input) {
           let url = '';
           try { url = (typeof input === 'string') ? input : ((input && input.url) || ''); } catch (e) {}
+          try {
+            const init = arguments[1];
+            logFeedRequest(url, init && init.body);
+          } catch (e) {}
           const result = origFetch.apply(this, arguments);
           if (!/\\/graphql|\\/api\\/v1\\/feed\\/|\\/api\\/v1\\/web\\/search\\/|\\/api\\/v1\\/fbsearch\\//.test(url)) return result;
           return result.then(function(response) {
@@ -1049,16 +1078,53 @@ enum ContentFilter {
         return 'allow';
       }
 
+      let feedDiagnostic = null;
+      function articleDiagnosticID(article) {
+        if (!article || !article.querySelector) return '?';
+        const media = article.querySelector('a[href^="/p/"], a[href^="/reel/"], a[href^="/reels/"]');
+        return (media && media.getAttribute('href')) || articleAuthor(article) || '?';
+      }
+
+      function beginFeedDiagnostic(reason) {
+        if (!isTopFrame || location.pathname !== '/') return;
+        if (feedDiagnostic && feedDiagnostic.timer) clearTimeout(feedDiagnostic.timer);
+        feedDiagnostic = { reason: reason, added: 0, removed: 0, reused: 0, markerRemoved: 0, ids: [], timer: null };
+        feedDiagnostic.timer = setTimeout(function() {
+          if (!feedDiagnostic) return;
+          const value = feedDiagnostic;
+          feedDiagnostic = null;
+          biLog('[feed-remount] reason=' + value.reason + ' added=' + value.added +
+            ' removed=' + value.removed + ' reused=' + value.reused +
+            ' markerRemoved=' + value.markerRemoved + ' ids=' + JSON.stringify(value.ids.slice(0, 8)));
+        }, 1800);
+      }
+
+      function noteFeedArticles(nodes, kind) {
+        if (!feedDiagnostic || !nodes) return;
+        for (let i = 0; i < nodes.length; i++) {
+          const node = nodes[i];
+          if (!node || node.nodeType !== 1) continue;
+          const articles = [];
+          if (node.tagName === 'ARTICLE') articles.push(node);
+          if (node.querySelectorAll) node.querySelectorAll('article').forEach(function(article) { articles.push(article); });
+          feedDiagnostic[kind] += articles.length;
+          articles.forEach(function(article) {
+            if (feedDiagnostic.ids.length < 8) feedDiagnostic.ids.push(kind + ':' + articleDiagnosticID(article));
+          });
+        }
+      }
+
+      let lastRoutePath = location.pathname;
       function onRouteChange() {
+        const oldPath = lastRoutePath;
+        const newPath = location.pathname;
+        lastRoutePath = newPath;
+        if (oldPath !== newPath) biLog('[route] ' + oldPath + ' -> ' + newPath + ' doc=' + documentID);
         updateScrollLock();
         reportNavVisibility();
         reportBackgroundColor();
-        if (location.pathname === '/') {
-          // Returning to the feed (closing a story, a reel, or comments) can
-          // bring a burst of freshly (re)rendered article nodes that haven't
-          // been filtered yet. Re-apply right away instead of waiting out the
-          // normal throttle window, so any unfiltered flash is as short as
-          // possible instead of visible for up to scheduleApply's wait.
+        if (newPath === '/') {
+          beginFeedDiagnostic('route-return:' + oldPath);
           requestAnimationFrame(apply);
         } else {
           scheduleApply();
@@ -1116,17 +1182,12 @@ enum ContentFilter {
         });
       }
 
-      // A reel opened from a DM share card is presented in an overlay dialog
-      // that Instagram's own web client slides in from the right, like a page
-      // navigation. That reads as a browser tab, not a native reel viewer, so
-      // on that one path (a reel opened while inside /direct/) we play a
-      // short scale-in instead. One-shot per dialog element (dataset guard) so
-      // it never replays on later mutations of the same still-open viewer.
-      // The overlay Instagram actually slides is not always [role="dialog"]
-      // or the scroll-snap container scrollLockContainer() looks for — widen
-      // the search to the nearest fixed/absolute-positioned ancestor that
-      // covers most of the viewport, which is what a full-screen modal
-      // overlay is built from regardless of its ARIA role.
+      // A reel opened from a DM share card is presented in an overlay that
+      // Instagram slides in from the right. The trusted activation records a
+      // pending token before Instagram handles it; the observer then hides the
+      // mounted surface before paint, waits out the slide, and reveals our pop.
+      // The overlay is not always [role="dialog"], so retain the near-fullscreen
+      // fixed/absolute and scroll-container fallbacks.
       function reelOverlayContainer(video) {
         const byRole = video.closest('[role="dialog"]');
         if (byRole) return byRole;
@@ -1146,46 +1207,153 @@ enum ContentFilter {
         return null;
       }
 
-      function maybeAnimateReelEntry(video) {
-        if (!video || !/^\\/direct\\//.test(location.pathname)) return;
-        const dialog = reelOverlayContainer(video);
-        if (!dialog || dialog.dataset.biPopped) return;
-        dialog.dataset.biPopped = '1';
-        biLog('[dm] reel pop applied role=' + (dialog.getAttribute('role') || dialog.tagName));
-        // Driven entirely from JS with !important inline declarations rather
-        // than a CSS class/keyframes: an !important inline style outranks a
-        // CSS transition/animation class Instagram itself may be using for
-        // the slide. This can't win against a library that reassigns this
-        // exact element's inline transform every frame (setting .style.x
-        // clears any prior !important on that property) — if the slide
-        // still shows after this, that's almost certainly what's happening,
-        // and the real fix needs a live-session capture of which element
-        // that JS actually animates.
+      function reduceMotionRequested() {
+        return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+      }
+
+      let dmReelPending = null;
+      try {
+        const storedPending = Number(sessionStorage.getItem('__biDMReelPendingUntil') || 0);
+        if (!reduceMotionRequested() && storedPending > Date.now()) {
+          dmReelPending = { until: storedPending, source: 'previous-document' };
+        } else {
+          sessionStorage.removeItem('__biDMReelPendingUntil');
+        }
+      } catch (e) {}
+
+      function markDMReelPending(source) {
+        if (reduceMotionRequested()) return;
+        const until = Date.now() + 900;
+        dmReelPending = { until: until, source: source };
+        try { sessionStorage.setItem('__biDMReelPendingUntil', String(until)); } catch (e) {}
+        biLog('[dm-pop] pending source=' + source + ' path=' + location.pathname);
+      }
+
+      function dmReelPendingActive() {
+        if (reduceMotionRequested() || !dmReelPending || dmReelPending.until <= Date.now()) {
+          dmReelPending = null;
+          try { sessionStorage.removeItem('__biDMReelPendingUntil'); } catch (e) {}
+          return false;
+        }
+        return true;
+      }
+
+      function dmPopAncestorCapture(surface, video) {
+        const values = [];
+        let node = video || surface;
+        for (let depth = 0; node && node !== document.body && depth < 8; depth++) {
+          const cs = getComputedStyle(node);
+          const r = node.getBoundingClientRect();
+          let animations = [];
+          try {
+            if (node.getAnimations) animations = node.getAnimations({ subtree: false }).map(function(animation) {
+              return animation.animationName || animation.playState || 'animation';
+            }).slice(0, 4);
+          } catch (e) {}
+          values.push({ tag: node.tagName, role: node.getAttribute && (node.getAttribute('role') || ''),
+            rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
+            inlineTransform: node.style && node.style.transform || '', transform: cs.transform,
+            transition: cs.transition, animation: cs.animationName, animations: animations });
+          node = node.parentElement;
+        }
+        return values;
+      }
+
+      function revealDMReelSurface(surface, reason) {
+        if (!surface || surface.dataset.biPopRevealed === '1') return;
+        surface.dataset.biPopRevealed = '1';
+        biLog('[dm-pop] reveal reason=' + reason + ' role=' +
+          (surface.getAttribute('role') || surface.tagName));
         try {
-          dialog.style.setProperty('transition', 'none', 'important');
-          dialog.style.setProperty('transform', 'scale(0.85)', 'important');
-          dialog.style.setProperty('opacity', '0.4', 'important');
+          surface.style.setProperty('visibility', 'visible', 'important');
+          surface.style.setProperty('transition', 'none', 'important');
+          surface.style.setProperty('transform', 'scale(0.88)', 'important');
+          surface.style.setProperty('opacity', '0', 'important');
         } catch (e) {}
         requestAnimationFrame(function() {
-          requestAnimationFrame(function() {
+          try {
+            surface.style.setProperty(
+              'transition',
+              'transform 0.22s cubic-bezier(0.2,0.8,0.2,1), opacity 0.22s ease-out',
+              'important'
+            );
+            surface.style.setProperty('transform', 'scale(1)', 'important');
+            surface.style.setProperty('opacity', '1', 'important');
+          } catch (e) {}
+          setTimeout(function() {
             try {
-              dialog.style.setProperty(
-                'transition',
-                'transform 0.22s cubic-bezier(0.2,0.8,0.2,1), opacity 0.22s ease-out',
-                'important'
-              );
-              dialog.style.setProperty('transform', 'scale(1)', 'important');
-              dialog.style.setProperty('opacity', '1', 'important');
+              surface.style.removeProperty('visibility');
+              surface.style.removeProperty('transition');
+              surface.style.removeProperty('transform');
+              surface.style.removeProperty('opacity');
             } catch (e) {}
-            setTimeout(function() {
-              try {
-                dialog.style.removeProperty('transition');
-                dialog.style.removeProperty('transform');
-                dialog.style.removeProperty('opacity');
-              } catch (e) {}
-            }, 260);
-          });
+          }, 260);
         });
+      }
+
+      function gateDMReelSurface(surface, video) {
+        if (!surface || surface.dataset.biPopGated === '1' || !dmReelPendingActive()) return;
+        surface.dataset.biPopGated = '1';
+        surface.dataset.biPopped = '1';
+        try {
+          surface.style.setProperty('visibility', 'hidden', 'important');
+          surface.style.setProperty('opacity', '0', 'important');
+        } catch (e) {}
+        let capture = [];
+        try { capture = dmPopAncestorCapture(surface, video); } catch (e) {
+          capture = [{ error: String(e) }];
+        }
+        biLog('[dm-pop] ancestors=' + JSON.stringify(capture));
+        biLog('[dm] reel pop applied role=' + (surface.getAttribute('role') || surface.tagName));
+        dmReelPending = null;
+        try { sessionStorage.removeItem('__biDMReelPendingUntil'); } catch (e) {}
+        const started = Date.now();
+        let stableFrames = 0;
+        let lastGeometry = '';
+        let finished = false;
+        function reveal(reason) {
+          if (finished) return;
+          finished = true;
+          revealDMReelSurface(surface, reason);
+        }
+        function waitForRest() {
+          if (finished || !surface.isConnected) { reveal('detached'); return; }
+          const currentVideo = video && video.isConnected ? video : surface.querySelector('video');
+          const r = surface.getBoundingClientRect();
+          const cs = getComputedStyle(surface);
+          const geometry = [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height),
+            cs.transform, cs.transition].join('|');
+          stableFrames = geometry === lastGeometry ? stableFrames + 1 : 0;
+          lastGeometry = geometry;
+          const fullEnough = !!currentVideo && r.width >= window.innerWidth * 0.8 &&
+            r.height >= window.innerHeight * 0.55;
+          if (fullEnough && stableFrames >= 2) { reveal('settled'); return; }
+          if (Date.now() - started >= 340) { reveal('timeout'); return; }
+          requestAnimationFrame(waitForRest);
+        }
+        requestAnimationFrame(waitForRest);
+        setTimeout(function() { reveal('hard-timeout'); }, 400);
+      }
+
+      function gatePendingDMReel(root) {
+        if (!dmReelPendingActive() || !root || root.nodeType !== 1) return;
+        let video = root.matches && root.matches('video') ? root :
+          (root.querySelector ? root.querySelector('video') : null);
+        let surface = null;
+        if (video) surface = reelOverlayContainer(video) || video;
+        if (!surface && root.matches && root.matches('[role="dialog"]')) surface = root;
+        if (!surface && root.getBoundingClientRect) {
+          const cs = getComputedStyle(root);
+          const r = root.getBoundingClientRect();
+          if ((cs.position === 'fixed' || cs.position === 'absolute') &&
+              r.width >= window.innerWidth * 0.8 && r.height >= window.innerHeight * 0.55) surface = root;
+        }
+        if (surface) gateDMReelSurface(surface, video);
+      }
+
+      function maybeAnimateReelEntry(video) {
+        if (!video || !dmReelPendingActive()) return;
+        gateDMReelSurface(reelOverlayContainer(video) || video, video);
       }
 
       function updateScrollLock() {
@@ -1381,6 +1549,7 @@ enum ContentFilter {
           const url = reelURLNearDMTarget(tap.target, point.clientX, point.clientY);
           if (!url) {
             if (isDMShareCardTap(tap.target)) {
+              markDMReelPending('url-less-touch');
               const path = location.pathname;
               setTimeout(function() {
                 if (location.pathname !== path || shouldLockScroll()) return;
@@ -1398,6 +1567,7 @@ enum ContentFilter {
             }
             return;
           }
+          markDMReelPending('permalink-touch');
           e.preventDefault();
           e.stopImmediatePropagation();
           biLog('[dm] routing first touch to ' + url.href);
@@ -1408,6 +1578,7 @@ enum ContentFilter {
           if (!e.isTrusted || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
           const url = reelURLNearDMTarget(e.target, e.clientX, e.clientY);
           if (!url) return;
+          markDMReelPending('permalink-click');
           e.preventDefault();
           e.stopImmediatePropagation();
           biLog('[dm] routing first click to ' + url.href);
@@ -1692,7 +1863,7 @@ enum ContentFilter {
       // the flex math (same technique as the home logo below). One shared
       // helper does the actual centering once a title element is found.
       function centerDMHeaderTitle(title) {
-        if (!title || title.dataset.biDmCentered === '1') return;
+        if (!title) return;
         let header = title.parentElement;
         let depth = 0;
         while (header && header !== document.body && depth < 10) {
@@ -1708,6 +1879,8 @@ enum ContentFilter {
         title.style.left = '50%';
         title.style.top = '50%';
         title.style.transform = 'translate(-50%, -50%)';
+        title.style.zIndex = '2';
+        title.style.pointerEvents = 'auto';
         title.style.maxWidth = '55%';
         title.style.textAlign = 'center';
       }
@@ -1755,10 +1928,35 @@ enum ContentFilter {
       // reportProfile() — each tab has its own JS realm). Cached after the
       // first hit so this doesn't re-scan the document every apply() pass.
       let dmInboxTitleEl = null;
+      function logDMHeaderScan(username, selected) {
+        if ((window.__biDMHeaderScanCount || 0) >= 5) return;
+        const candidates = [];
+        document.querySelectorAll('span, div, button, a').forEach(function(el) {
+          if (candidates.length >= 8) return;
+          const text = (el.textContent || '').trim().replace(/\\s+/g, ' ');
+          if (!text || text.length > 60) return;
+          const r = el.getBoundingClientRect();
+          if (r.top < 0 || r.top > 110 || r.width <= 0 || r.height <= 0) return;
+          candidates.push({ tag: el.tagName, role: el.getAttribute('role') || '', text: text.slice(0, 40),
+            rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
+            ancestry: shortAncestry(el, 4) });
+        });
+        const signature = username + '|' + JSON.stringify(candidates) + '|' + !!selected;
+        if (window.__biLastDMHeaderScan === signature) return;
+        window.__biLastDMHeaderScan = signature;
+        window.__biDMHeaderScanCount = (window.__biDMHeaderScanCount || 0) + 1;
+        biLog('[dm-header] profileHref=' + (window.__biLastProfileHref || '') + ' route=' + location.pathname +
+          ' selected=' + !!selected + ' candidates=' + JSON.stringify(candidates));
+      }
+
       function fixDMInboxHeader() {
-        if (dmInboxTitleEl && dmInboxTitleEl.isConnected) return;
         const username = (window.__biLastProfileHref || '').replace(/\\//g, '').toLowerCase();
-        if (!username) return;
+        if (dmInboxTitleEl && dmInboxTitleEl.isConnected) {
+          centerDMHeaderTitle(dmInboxTitleEl);
+          logDMHeaderScan(username, dmInboxTitleEl);
+          return;
+        }
+        if (!username) { logDMHeaderScan('', null); return; }
         let title = null;
         const candidates = document.querySelectorAll('span, div, button, a');
         for (let i = 0; i < candidates.length; i++) {
@@ -1770,9 +1968,10 @@ enum ContentFilter {
           title = clickableFor(el) || el;
           break;
         }
-        if (!title) return;
+        if (!title) { logDMHeaderScan(username, null); return; }
         dmInboxTitleEl = title;
         centerDMHeaderTitle(title);
+        logDMHeaderScan(username, title);
         if (!window.__biDMHeaderFixLogged) {
           window.__biDMHeaderFixLogged = true;
           biLog('[header] dm inbox title centered');
@@ -1785,29 +1984,58 @@ enum ContentFilter {
         if (/^\\/direct\\/(inbox\\/?)?$/.test(location.pathname)) { fixDMInboxHeader(); }
       }
 
-      // DM thread message list scrolls inside its own container (fixed header
-      // + fixed composer), which our outer webview-level bottom clearance
-      // never reaches — so the last message(s) can end up hidden behind the
-      // floating native tab bar with nowhere further to scroll. Give that
-      // inner container real bottom scroll room once, idempotently.
+      // DM threads use an inner scroller around a fixed composer. Keep the
+      // existing conservative padding backstop, but reassert it after React
+      // restyles the node and capture enough geometry to identify the actual
+      // scroller on-device.
       let dmScrollFixContainer = null;
       function fixDirectThreadScroll() {
         if (!isTopFrame || !/^\\/direct\\/t\\//.test(location.pathname)) return;
-        if (dmScrollFixContainer && dmScrollFixContainer.isConnected) return;
-        let container = null;
+        let container = dmScrollFixContainer && dmScrollFixContainer.isConnected ? dmScrollFixContainer : null;
         let maxOverflow = 0;
+        const plausible = [];
+        const captureScrollGeometry = (window.__biDMScrollScanCount || 0) < 6;
         scanRoot().querySelectorAll('div').forEach(function(node) {
           if (node.clientHeight < 120) return;
           const cs = getComputedStyle(node);
           if (cs.overflowY !== 'auto' && cs.overflowY !== 'scroll') return;
           const overflow = node.scrollHeight - node.clientHeight;
-          if (overflow > maxOverflow) { maxOverflow = overflow; container = node; }
+          if (captureScrollGeometry && plausible.length < 8) {
+            const r = node.getBoundingClientRect();
+            plausible.push({ tag: node.tagName, overflow: cs.overflowY,
+              rect: [Math.round(r.top), Math.round(r.bottom), Math.round(r.height)],
+              top: Math.round(node.scrollTop), client: node.clientHeight, scroll: node.scrollHeight, max: overflow,
+              ancestry: shortAncestry(node, 4) });
+          }
+          if (!container && overflow > maxOverflow) { maxOverflow = overflow; container = node; }
+          if (container === dmScrollFixContainer && overflow > maxOverflow) maxOverflow = overflow;
         });
         if (!container) return;
         dmScrollFixContainer = container;
         container.style.paddingBottom = '28px';
+        container.style.scrollPaddingBottom = '28px';
         container.style.overscrollBehaviorY = 'contain';
-        biLog('[dm] extended thread scroll container');
+        if (!window.__biDMScrollFixLogged) {
+          window.__biDMScrollFixLogged = true;
+          biLog('[dm] extended thread scroll container');
+        }
+        if (!captureScrollGeometry) return;
+        const composerControl = document.querySelector('textarea, input[placeholder], [contenteditable="true"]');
+        const composer = composerControl && (clickableFor(composerControl) || composerControl.parentElement);
+        const composerRect = composer ? composer.getBoundingClientRect() : null;
+        const last = container.lastElementChild;
+        const lastRect = last ? last.getBoundingClientRect() : null;
+        const signature = Math.round(container.scrollTop / 50) + '|' + Math.round((container.scrollHeight - container.clientHeight) / 50) +
+          '|' + (composerRect ? Math.round(composerRect.top) : '?') + '|' + (lastRect ? Math.round(lastRect.bottom) : '?');
+        if (window.__biLastDMScrollScan !== signature && (window.__biDMScrollScanCount || 0) < 6) {
+          window.__biLastDMScrollScan = signature;
+          window.__biDMScrollScanCount = (window.__biDMScrollScanCount || 0) + 1;
+          biLog('[dm-scroll] chosen=' + shortAncestry(container, 6) + ' top=' + Math.round(container.scrollTop) +
+            ' max=' + Math.round(container.scrollHeight - container.clientHeight) +
+            ' lastBottom=' + (lastRect ? Math.round(lastRect.bottom) : '?') +
+            ' composerTop=' + (composerRect ? Math.round(composerRect.top) : '?') +
+            ' viewport=' + window.innerHeight + ' ancestors=' + JSON.stringify(plausible));
+        }
       }
 
       // Home header: center the Instagram logo and add a favorites star on
@@ -1843,32 +2071,44 @@ enum ContentFilter {
         // it, only where it visually sits relative to the now-centered logo.
         const logoBox = logo.closest('a, [role="link"], [role="button"], button') || logo.parentElement;
         if (!logoBox.querySelector('article')) {
-          if (logoBox.style.position !== 'absolute') {
-            logoBox.style.position = 'absolute';
-            logoBox.style.left = '50%';
-            logoBox.style.top = '50%';
-            logoBox.style.transform = 'translate(-50%, -50%)';
-            logoBox.style.zIndex = '2';
-          }
+          logoBox.style.position = 'absolute';
+          logoBox.style.left = '50%';
+          logoBox.style.top = '50%';
+          logoBox.style.transform = 'translate(-50%, -50%)';
+          logoBox.style.zIndex = '2';
           // The header logo is decorative here — clicking it must do nothing
           // (no feed switcher, no scroll-to-top), so make it inert.
-          if (logoBox.style.pointerEvents !== 'none') {
-            logoBox.style.pointerEvents = 'none';
-          }
+          logoBox.style.pointerEvents = 'none';
           // Forces a synchronous layout so the rect below reflects the
           // positioning just applied above, not last frame's stale layout.
           const headerRect = header.getBoundingClientRect();
           const centerX = headerRect.left + headerRect.width / 2;
+          const nearby = [];
           header.querySelectorAll('svg').forEach(function(svg) {
             if (svg === logo || svg.id === '__bi_star_btn') return;
             if (svg.closest('#__bi_star_btn, article')) return;
             const r = svg.getBoundingClientRect();
             if (r.width === 0 || r.width >= 44) return;
             const cx = r.left + r.width / 2;
-            if (Math.abs(cx - centerX) < 60 && svg.style.display !== 'none') {
+            if (Math.abs(cx - centerX) < 60) {
+              nearby.push({ tag: svg.tagName, aria: svg.getAttribute('aria-label') || '',
+                rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] });
               svg.style.display = 'none';
             }
           });
+          if ((window.__biHeaderScanCount || 0) < 6) {
+            const logoRect = logoBox.getBoundingClientRect();
+            const scan = 'header=' + shortAncestry(header, 3) + '.' + String(header.className || '').slice(0, 80) +
+              ' logo=' + shortAncestry(logoBox, 3) + '.' + String(logoBox.className || '').slice(0, 80) +
+              ' logoRect=' + JSON.stringify([Math.round(logoRect.left), Math.round(logoRect.top),
+                Math.round(logoRect.width), Math.round(logoRect.height)]) + ' nearby=' + JSON.stringify(nearby) +
+              ' scroll=' + Math.round(window.scrollY);
+            if (window.__biLastHeaderScan !== scan) {
+              window.__biLastHeaderScan = scan;
+              window.__biHeaderScanCount = (window.__biHeaderScanCount || 0) + 1;
+              biLog('[header-scan] variant=' + (header.getAttribute('role') || header.tagName) + ' ' + scan);
+            }
+          }
         }
 
         if (!document.getElementById('__bi_star_btn')) {
@@ -2018,6 +2258,8 @@ enum ContentFilter {
           if (visibleCommentSheet()) return;
           window.__biCommentSheetOpen = false;
           biLog('[comments] open=false');
+          beginFeedDiagnostic('comments-close');
+          requestAnimationFrame(apply);
           reportNavVisibility();
         }, 250);
       }
@@ -2315,52 +2557,90 @@ enum ContentFilter {
 
       let applyScheduled = false;
       let lastApply = 0;
+      let applyPerf = { count: 0, total: 0, max: 0, stages: {} };
+      function clockNow() {
+        return (window.performance && performance.now) ? performance.now() : Date.now();
+      }
+      function recordApplyTiming(total, timings) {
+        applyPerf.count++;
+        applyPerf.total += total;
+        applyPerf.max = Math.max(applyPerf.max, total);
+        timings.forEach(function(item) {
+          const value = applyPerf.stages[item.name] || { total: 0, max: 0 };
+          value.total += item.duration;
+          value.max = Math.max(value.max, item.duration);
+          applyPerf.stages[item.name] = value;
+        });
+        if (applyPerf.count < 20) return;
+        if ((window.__biApplyPerfReports || 0) < 6) {
+          window.__biApplyPerfReports = (window.__biApplyPerfReports || 0) + 1;
+          const slowest = Object.keys(applyPerf.stages).map(function(name) {
+            return { name: name, total: applyPerf.stages[name].total, max: applyPerf.stages[name].max };
+          }).sort(function(a, b) { return b.total - a.total; }).slice(0, 5).map(function(item) {
+            return item.name + ':' + item.total.toFixed(1) + '/' + item.max.toFixed(1);
+          });
+          biLog('[apply-perf] count=' + applyPerf.count + ' total=' + applyPerf.total.toFixed(1) +
+            ' max=' + applyPerf.max.toFixed(1) + ' stages=' + slowest.join(','));
+        }
+        applyPerf = { count: 0, total: 0, max: 0, stages: {} };
+      }
+
       function apply() {
         applyScheduled = false;
         lastApply = Date.now();
+        let stage = 'setup';
+        const started = clockNow();
+        const timings = [];
+        const measureApply = (window.__biApplyPerfReports || 0) < 6;
+        function run(name, fn) {
+          stage = name;
+          if (!measureApply) { fn(); return; }
+          const before = clockNow();
+          fn();
+          timings.push({ name: name, duration: clockNow() - before });
+        }
         try {
-          ensureStyleInjected();
-          // Route-scope the per-surface DOM passes: each fix* helper already
-          // self-guards on its exact path, but skipping the call entirely on
-          // unrelated routes avoids their querySelectorAll traversals firing on
-          // every home-feed mutation (P5: keep scroll at ~60fps).
+          run('style', ensureStyleInjected);
           const path = location.pathname;
           const isHome = path === '/';
           const isDirect = /^\\/direct\\//.test(path);
           const isSearch = path.indexOf('/explore/search') === 0;
 
-          hideSponsoredAndReels();
-          hideFeedNoise();
-          lockToPrimaryReel();
-          updateScrollLock();
-          forcePlaysInline();
-          dismissAppNag();
-          hideOriginalNav();
-          // Native tab bar covers the home bottom; hideBottomBars' div/nav/footer
-          // scan is the heaviest pass, so skip it on the home feed only.
-          if (!isHome) hideBottomBars();
-          if (isSearch) fixSearchPage();
+          run('hide-sponsored-reels', hideSponsoredAndReels);
+          run('hide-feed-noise', hideFeedNoise);
+          run('lock-primary-reel', lockToPrimaryReel);
+          run('update-scroll-lock', updateScrollLock);
+          run('plays-inline', forcePlaysInline);
+          run('dismiss-app-nag', dismissAppNag);
+          run('hide-original-nav', hideOriginalNav);
+          if (!isHome) run('hide-bottom-bars', hideBottomBars);
+          if (isSearch) run('search', fixSearchPage);
+          // Resolve own-profile identity before the inbox header needs it, so
+          // the first Direct apply can center the title instead of waiting for
+          // an unrelated later mutation.
+          run('report-profile', reportProfile);
           if (isDirect) {
-            fixDirectInbox();
-            fixDMHeader();
-            fixDirectThreadScroll();
-            fixDirectMediaQuality();
-            upgradeDirectPreviews();
-            fixDMShareCardCursor();
+            run('direct-inbox', fixDirectInbox);
+            run('dm-header', fixDMHeader);
+            run('dm-scroll', fixDirectThreadScroll);
+            run('dm-media-quality', fixDirectMediaQuality);
+            run('dm-preview-upgrade', upgradeDirectPreviews);
+            run('dm-card-cursor', fixDMShareCardCursor);
           }
           if (isHome) {
-            fixHomeHeader();
-            removeReservedNavSpace();
+            run('home-header', fixHomeHeader);
+            run('home-nav-space', removeReservedNavSpace);
           }
-          updateCommentSheet();
-          reportNavVisibility();
-          reportAvatar();
-          reportProfile();
-          reportFeedHealth();
-          armFeedWatchdog();
-          reportBackgroundColor();
+          run('comments', updateCommentSheet);
+          run('report-nav', reportNavVisibility);
+          run('report-avatar', reportAvatar);
+          run('report-feed', reportFeedHealth);
+          run('feed-watchdog', armFeedWatchdog);
+          run('report-background', reportBackgroundColor);
+          if (measureApply) recordApplyTiming(clockNow() - started, timings);
         } catch (e) {
-          biLog('[error] apply failed: ' + (e && e.message ? e.message : e));
+          biLog('[apply-error] stage=' + stage + ' path=' + location.pathname + ' doc=' + documentID +
+            ' error=' + (e && e.message ? e.message : e));
         }
       }
 
@@ -2375,7 +2655,20 @@ enum ContentFilter {
         setTimeout(fire, wait);
       }
 
-      biLog('[boot] filter running on ' + location.pathname);
+      postLog('[boot] filter running on ' + location.pathname + ' id=' + documentID +
+        ' frame=' + (isTopFrame ? 'top' : 'sub') + ' url=' + location.href);
+      if (isTopFrame && !window.__biLifecycleHooked) {
+        window.__biLifecycleHooked = true;
+        window.addEventListener('pageshow', function(e) {
+          biLog('[lifecycle] pageshow persisted=' + !!e.persisted + ' doc=' + documentID + ' path=' + location.pathname);
+        });
+        window.addEventListener('pagehide', function(e) {
+          biLog('[lifecycle] pagehide persisted=' + !!e.persisted + ' doc=' + documentID + ' path=' + location.pathname);
+        });
+        document.addEventListener('visibilitychange', function() {
+          biLog('[lifecycle] visibility=' + document.visibilityState + ' doc=' + documentID + ' path=' + location.pathname);
+        });
+      }
       if (isTopFrame && !window.__biErrHooked) {
         window.__biErrHooked = true;
         window.addEventListener('error', function(e) {
@@ -2402,19 +2695,29 @@ enum ContentFilter {
       window.__biSetFavorites = setFavorites;
       setFavorites(window.__biFavorites, window.__biFavoritesEnabled);
 
-      // A class-only mutation whose token set differs from its previous value
-      // solely by our own __bi_* markers is self-inflicted churn from a prior
-      // apply() pass; treat those batches as no-ops so they don't reschedule
-      // another full apply() (P5: avoids a hide/observe/re-apply feedback loop).
+      function classTokens(value, markersOnly) {
+        return (value || '').split(/\\s+/).filter(function(token) {
+          if (!token) return false;
+          return markersOnly ? token.indexOf('__bi_') === 0 : token.indexOf('__bi_') !== 0;
+        }).sort();
+      }
+
+      function removedClassMarkers(m) {
+        if (m.type !== 'attributes' || m.attributeName !== 'class') return [];
+        const oldMarkers = classTokens(m.oldValue, true);
+        const now = (m.target && m.target.getAttribute) ? m.target.getAttribute('class') : '';
+        const current = new Set(classTokens(now, true));
+        return oldMarkers.filter(function(token) { return !current.has(token); });
+      }
+
+      // Suppress only expected BetterInstagram marker additions. If React
+      // removes one of our markers, that is a real visibility change and must
+      // immediately refilter the article instead of waiting for another mutation.
       function selfClassChurn(m) {
         if (m.type !== 'attributes' || m.attributeName !== 'class') return false;
-        const strip = function(value) {
-          return (value || '').split(/\\s+/).filter(function(token) {
-            return token && token.indexOf('__bi_') !== 0;
-          }).sort().join(' ');
-        };
+        if (removedClassMarkers(m).length) return false;
         const now = (m.target && m.target.getAttribute) ? m.target.getAttribute('class') : '';
-        return strip(m.oldValue) === strip(now);
+        return classTokens(m.oldValue, false).join(' ') === classTokens(now, false).join(' ');
       }
 
       const observer = new MutationObserver(function(mutations) {
@@ -2425,7 +2728,19 @@ enum ContentFilter {
           if (mutation.type === 'childList') {
             if ((mutation.addedNodes && mutation.addedNodes.length) ||
                 (mutation.removedNodes && mutation.removedNodes.length)) realChange = true;
+            noteFeedArticles(mutation.addedNodes, 'added');
+            noteFeedArticles(mutation.removedNodes, 'removed');
           } else if (!selfClassChurn(mutation)) {
+            const removedMarkers = removedClassMarkers(mutation);
+            if (removedMarkers.length) {
+              if (!feedDiagnostic && location.pathname === '/') beginFeedDiagnostic('marker-removal');
+              if (feedDiagnostic) {
+                feedDiagnostic.markerRemoved += removedMarkers.length;
+                feedDiagnostic.reused++;
+              }
+              const article = mutation.target && mutation.target.closest ? mutation.target.closest('article') : null;
+              if (article) filterArticle(article);
+            }
             realChange = true;
           }
           if (mutations[i].type === 'attributes' && /^\\/(stories|reels?)\\//.test(location.pathname)) {
@@ -2444,6 +2759,9 @@ enum ContentFilter {
           for (let j = 0; j < added.length; j++) {
             const node = added[j];
             if (!node || node.nodeType !== 1) continue;
+            // Pending DM reel surfaces are hidden in this same mutation
+            // microtask, before WebKit gets a chance to paint Instagram's slide.
+            gatePendingDMReel(node);
             if (node.matches('video, img, canvas, [role="dialog"]') ||
                 (node.querySelector && node.querySelector('video, img, canvas, [role="dialog"]'))) {
               viewerSurfaceChanged = true;

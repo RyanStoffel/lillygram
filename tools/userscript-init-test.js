@@ -145,8 +145,14 @@ setTimeout(() => {
       'observe() calls: ' + observeCalls.length);
     check('observer delivered mutations after init', mutationBatches > 0,
       'batches: ' + mutationBatches);
-    check('apply() ran without error', !has('[error] apply failed'),
-      biLogs().filter((l) => l.startsWith('[error]')).join(' | '));
+    check('apply() ran without error', !has('[error] apply failed') && !has('[apply-error]'),
+      biLogs().filter((l) => l.startsWith('[error]') || l.startsWith('[apply-error]')).join(' | '));
+
+    // React can retain an article node while replacing its className, removing
+    // our hide marker. The observer must treat marker removal as real work and
+    // synchronously re-filter it rather than suppressing it as self churn.
+    const markerRemovalArticle = window.document.querySelector('article');
+    markerRemovalArticle.classList.remove('__bi_hidden');
 
     const presentations = () => logs.filter((l) => l[0] === 'biPresentation');
     const lastPresentation = () => {
@@ -186,6 +192,9 @@ setTimeout(() => {
     check('degraded flag set', window.__biFeedDegraded === true);
 
     setTimeout(() => {
+      check('removed hide marker is synchronously restored',
+        markerRemovalArticle.classList.contains('__bi_hidden'),
+        'classes: ' + markerRemovalArticle.className);
       const unknown = window.document.createElement('article');
       unknown.innerHTML = '<div>no author link at all</div>';
       window.document.querySelector('main').appendChild(unknown);

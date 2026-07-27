@@ -5,7 +5,59 @@ as issues are fixed or found.
 
 ---
 
-## 0. First on-device polish pass (2026-07-26)
+## 0. Device-polish observability and deterministic fixes (2026-07-27)
+
+**Requirement:** R4 (plus R1 marker integrity). **Status:** deterministic bugs fixed;
+selector/geometry/animation changes pending a fresh physical-device round.
+
+This pass follows the stale-device-build diagnosis in
+`research-2026-07-27-device-polish.md`. Build number is now **2** and startup
+prints `[BI-BUILD] device-polish-observability v2`; the next device round must
+confirm that exact console line before judging behavior.
+
+**Verified in code and fixed:**
+
+- Pull-to-refresh now has explicit `idle` → `pullCommitted` → `rebuilding`
+  phases. The committed phase keeps the current document and native refresh
+  spinner visible with no splash; only after 0.4 s does the rebuild splash
+  appear and the actual re-harvest/home load begin.
+- `selfClassChurn()` no longer suppresses Instagram removing a `__bi_*` hide
+  marker. Marker removal is treated as real work and the owning article is
+  immediately re-filtered; the jsdom gate now covers this regression.
+- A successful harvest/density result destroys and detaches its offscreen
+  `WKWebView`, reducing the steady-state process from five Instagram documents
+  back to the four persistent tabs.
+- Native bottom geometry now follows each page's `biNav` state. A page only
+  receives the 100-point outer tab-bar clearance while its native tab bar is
+  visible, and SwiftUI respects the bottom safe area when the tab bar is hidden.
+  The DM inner-scroller padding remains as a reasserted fallback.
+- Home and DM title positioning invariants are reasserted on every applicable
+  pass. Direct resolves its profile identity before attempting the inbox title,
+  removing the first-pass ordering dependency.
+
+**Implemented conservatively; needs device confirmation:**
+
+- DM reel entry now marks the trusted share-card activation before forwarding
+  it, hides the newly mounted viewer in the MutationObserver microtask, waits
+  briefly for stable fullscreen geometry (hard 400 ms reveal fallback), then
+  reveals with a centered scale/opacity transition. Reduce Motion bypasses it.
+- The geometric home-caret rule and heuristic DM message-scroller selection are
+  intentionally retained pending real DOM evidence. They now reassert their
+  styles and emit bounded captures rather than being broadened blindly.
+
+**Diagnostics added for the next round:** every native load/reload/recovery and
+navigation lifecycle event has an id/reason plus active tab, URL, loading state,
+and offset; userscript boots include document/frame ids and lifecycle/route
+logs; `apply()` reports named-stage errors and sampled timings; bounded
+`[header-scan]`, `[dm-header]`, `[dm-scroll]`, `[dm-pop]`, and `[feed-remount]`
+lines capture the remaining live selector/animation/refetch questions. These
+logs do not by themselves prove that random home refreshes, header/caret
+instability, DM bottom reachability, DM reel animation, DM inbox centering, or
+general slowness are resolved.
+
+---
+
+## 0a. First on-device polish pass (2026-07-26)
 
 **Requirement:** R4. **Status:** implemented, pending on-device verification.
 
