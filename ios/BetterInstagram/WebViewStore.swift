@@ -830,6 +830,18 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             if preloadAlreadyCorrect {
                 print("[BI-harvest] disk preload matched live harvest; skipping post-harvest reload")
             } else {
+                // The pre-reload page can render a real (if not yet
+                // deterministic) favorites feed the instant deliverFavEdges()
+                // above unblocks its held request — which can flip
+                // favoritesFeedReady true and drop the splash a moment before
+                // this scheduled reload actually fires. That's the visible
+                // "loads in, then flashes as it reloads" bug: the splash
+                // leaves early, the reload briefly shows the raw page (with
+                // Instagram's own chrome, before our filters catch up), then
+                // the real favorites feed reappears. Re-arm it so the splash
+                // stays up for the entire cycle and only the *reloaded*
+                // page's own biFavReady drops it for good.
+                favoritesFeedReady = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                     self?.webViews[.home]?.reload()
                 }

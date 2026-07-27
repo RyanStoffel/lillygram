@@ -81,6 +81,55 @@ already route-scoped (contrary to the handoff doc's claim it wasn't); a real
 fix needs on-device profiling (Instruments Time Profiler during feed scroll)
 to find the actual hot path rather than guessing.
 
+### Follow-up pass (same day, second device round)
+
+Device testing after the above showed three of the fixes didn't actually land
+and surfaced one new root cause:
+
+- **DM header fix targeted the wrong screen.** The report ("my name isn't
+  centered") was the **inbox** list header (own username + account-switcher
+  chevron, e.g. "r.stoffel.62 ⌄"), not the thread header `fixDMHeader()` was
+  scoped to (`/direct/t/`, gated on a "Back" icon that doesn't exist on the
+  inbox route) — so it never ran. Split into `fixDMThreadHeader()` (unchanged
+  logic) and `fixDMInboxHeader()` (new): the inbox title has no reliable
+  anchor icon, so it's found by matching text against the username already
+  resolved from the nav row (`window.__biLastProfileHref`, populated
+  independently per-webview since each tab is its own JS realm).
+- **Home logo caret reappears on scroll.** The previous fix hid caret svgs by
+  DOM relationship (nested in the logo's box, or its next sibling) — which
+  breaks the moment that relationship shifts, and a scroll-triggered
+  compact/sticky header variant does exactly that. Replaced with a geometric
+  check: after centering the logo box, hide anything small sitting near the
+  header's horizontal center, regardless of how it nests. Robust to *how* the
+  caret remounts, only cares *where* it visually sits.
+- **Cold-start "loads in, then flashes as it reloads" with IG's own nav
+  showing.** Root cause: `finishHarvest()`'s post-harvest `deliverFavEdges()`
+  can unblock the *pre-reload* page's held feed request immediately, which can
+  render real favorites and flip `favoritesFeedReady` true (dropping the
+  splash) a moment before the already-scheduled 0.3s-later reload fires — so
+  the user sees the splash drop, then Instagram's raw page (with its own
+  chrome, before our filters catch up) for the reload's duration, then
+  favorites again. This reload itself is not skippable on a true cold start
+  (see #1's root cause: the initial SSR-embedded HTML, not the XHR, is what
+  actually renders, and only a reload gets favorites into a fresh SSR embed).
+  Fixed by re-arming `favoritesFeedReady = false` at the moment the reload is
+  scheduled, so the splash stays up for the whole cycle and only the
+  *reloaded* page's own `biFavReady` drops it.
+- **DM reel still slides in from the right.** Broadened the overlay-container
+  search (role=dialog, then the scroll-lock container, then the nearest
+  fixed/absolute-positioned near-fullscreen ancestor) and switched from a CSS
+  class/keyframes animation to a JS-driven `!important` inline
+  transform/opacity transition, since `!important` inline outranks a CSS
+  transition class Instagram might be using. **Still unverified** — if
+  Instagram drives the slide by reassigning this same element's inline
+  `transform` every frame (a JS/Framer-Motion-style animation rather than a
+  CSS class), no inline-style trick on that element can win: assigning
+  `.style.transform = x` from JS clears any prior `!important` on that
+  property regardless of who set it. Added a `[dm] reel pop applied
+  role=...` log; if the slide persists, check whether that log fires at all
+  (wrong element found) versus fires but is visually overridden (wrong
+  animation mechanism, needs a live capture of what's actually driving it).
+
 ---
 
 ## 1. Favorites feed regression — home feed spins / renders too few  ⚠️ TOP PRIORITY

@@ -42,8 +42,6 @@ enum ContentFilter {
         a, button, [role="button"], [role="link"], input, select, textarea { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
         #__bi_star_btn { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); z-index: 3; background: none; border: 0; padding: 8px; display: flex; align-items: center; }
         @keyframes __bi_rot { to { transform: rotate(360deg); } }
-        @keyframes __bi_pop_in { from { transform: scale(0.85); opacity: 0.4; } to { transform: scale(1); opacity: 1; } }
-        .__bi_reel_pop { animation: __bi_pop_in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1) both; transform-origin: center center; }
       `;
 
       function biLog(msg) {
@@ -1124,12 +1122,70 @@ enum ContentFilter {
       // on that one path (a reel opened while inside /direct/) we play a
       // short scale-in instead. One-shot per dialog element (dataset guard) so
       // it never replays on later mutations of the same still-open viewer.
+      // The overlay Instagram actually slides is not always [role="dialog"]
+      // or the scroll-snap container scrollLockContainer() looks for — widen
+      // the search to the nearest fixed/absolute-positioned ancestor that
+      // covers most of the viewport, which is what a full-screen modal
+      // overlay is built from regardless of its ARIA role.
+      function reelOverlayContainer(video) {
+        const byRole = video.closest('[role="dialog"]');
+        if (byRole) return byRole;
+        const byScroll = scrollLockContainer(video);
+        if (byScroll) return byScroll;
+        let node = video.parentElement;
+        let depth = 0;
+        while (node && node !== document.body && depth < 10) {
+          const cs = getComputedStyle(node);
+          if ((cs.position === 'fixed' || cs.position === 'absolute')) {
+            const r = node.getBoundingClientRect();
+            if (r.width >= window.innerWidth * 0.9 && r.height >= window.innerHeight * 0.6) return node;
+          }
+          node = node.parentElement;
+          depth++;
+        }
+        return null;
+      }
+
       function maybeAnimateReelEntry(video) {
         if (!video || !/^\\/direct\\//.test(location.pathname)) return;
-        const dialog = video.closest('[role="dialog"]') || scrollLockContainer(video);
+        const dialog = reelOverlayContainer(video);
         if (!dialog || dialog.dataset.biPopped) return;
         dialog.dataset.biPopped = '1';
-        dialog.classList.add('__bi_reel_pop');
+        biLog('[dm] reel pop applied role=' + (dialog.getAttribute('role') || dialog.tagName));
+        // Driven entirely from JS with !important inline declarations rather
+        // than a CSS class/keyframes: an !important inline style outranks a
+        // CSS transition/animation class Instagram itself may be using for
+        // the slide. This can't win against a library that reassigns this
+        // exact element's inline transform every frame (setting .style.x
+        // clears any prior !important on that property) — if the slide
+        // still shows after this, that's almost certainly what's happening,
+        // and the real fix needs a live-session capture of which element
+        // that JS actually animates.
+        try {
+          dialog.style.setProperty('transition', 'none', 'important');
+          dialog.style.setProperty('transform', 'scale(0.85)', 'important');
+          dialog.style.setProperty('opacity', '0.4', 'important');
+        } catch (e) {}
+        requestAnimationFrame(function() {
+          requestAnimationFrame(function() {
+            try {
+              dialog.style.setProperty(
+                'transition',
+                'transform 0.22s cubic-bezier(0.2,0.8,0.2,1), opacity 0.22s ease-out',
+                'important'
+              );
+              dialog.style.setProperty('transform', 'scale(1)', 'important');
+              dialog.style.setProperty('opacity', '1', 'important');
+            } catch (e) {}
+            setTimeout(function() {
+              try {
+                dialog.style.removeProperty('transition');
+                dialog.style.removeProperty('transform');
+                dialog.style.removeProperty('opacity');
+              } catch (e) {}
+            }, 260);
+          });
+        });
       }
 
       function updateScrollLock() {
@@ -1628,31 +1684,55 @@ enum ContentFilter {
         });
       }
 
-      // DM thread header: Instagram lays the back button, avatar/name control
-      // and the call/video/info icons out with flex space-between, so an
-      // unequal-width icon cluster on the right visibly drags the name off
-      // center. Absolutely center the name control instead of fighting the
-      // flex math (same technique as the home logo below).
-      function fixDMHeader() {
-        if (!isTopFrame || !/^\\/direct\\/t\\//.test(location.pathname)) return;
-        const back = document.querySelector('svg[aria-label="Back"]');
-        if (!back) return;
-        let header = back.parentElement;
+      // DM headers: Instagram lays a leading control (back button on a
+      // thread; nothing on the inbox) and a trailing icon cluster (call/
+      // video/info on a thread; the compose/edit icon on the inbox) out with
+      // flex space-between, so an unequal-width side visibly drags the
+      // title off center. Absolutely center the title instead of fighting
+      // the flex math (same technique as the home logo below). One shared
+      // helper does the actual centering once a title element is found.
+      function centerDMHeaderTitle(title) {
+        if (!title || title.dataset.biDmCentered === '1') return;
+        let header = title.parentElement;
         let depth = 0;
-        while (header && header !== document.body && depth < 12) {
+        while (header && header !== document.body && depth < 10) {
           const r = header.getBoundingClientRect();
-          if (r.width >= window.innerWidth * 0.9 && r.height > 0 && r.height < 120 &&
-              !header.querySelector('article')) break;
+          if (r.width >= window.innerWidth * 0.9 && r.height > 0 && r.height < 120) break;
           header = header.parentElement;
           depth++;
         }
         if (!header || header === document.body) return;
         if (getComputedStyle(header).position === 'static') header.style.position = 'relative';
+        title.dataset.biDmCentered = '1';
+        title.style.position = 'absolute';
+        title.style.left = '50%';
+        title.style.top = '50%';
+        title.style.transform = 'translate(-50%, -50%)';
+        title.style.maxWidth = '55%';
+        title.style.textAlign = 'center';
+      }
 
+      // Thread route (/direct/t/<id>/): the name/avatar control is the
+      // header's own clickable child with real text that isn't the back
+      // button and isn't an icon-only control (call/video/info have an svg
+      // and no text). Left tappable — unlike the decorative home logo, this
+      // opens thread details.
+      function fixDMThreadHeader() {
+        const back = document.querySelector('svg[aria-label="Back"]');
+        if (!back) return;
+        const header = back.closest('header') || (function() {
+          let node = back.parentElement, depth = 0;
+          while (node && node !== document.body && depth < 12) {
+            const r = node.getBoundingClientRect();
+            if (r.width >= window.innerWidth * 0.9 && r.height > 0 && r.height < 120 &&
+                !node.querySelector('article')) return node;
+            node = node.parentElement;
+            depth++;
+          }
+          return null;
+        })();
+        if (!header) return;
         const backControl = clickableFor(back) || back.parentElement;
-        // The name/avatar control: the header's own clickable child with real
-        // text content that isn't the back button and isn't an icon-only
-        // control (call/video/info have an svg and no text).
         let title = null;
         const controls = header.querySelectorAll(':scope > *, :scope > * > *');
         for (let i = 0; i < controls.length; i++) {
@@ -1664,22 +1744,45 @@ enum ContentFilter {
           if (el.querySelectorAll('svg').length > 1) continue;
           if (!title || text.length > (title.textContent || '').trim().length) title = el;
         }
-        if (!title) return;
-        if (title.dataset.biDmCentered !== '1') {
-          title.dataset.biDmCentered = '1';
-          // Unlike the decorative home logo, this control still opens thread
-          // details — keep it tappable, just recentered.
-          title.style.position = 'absolute';
-          title.style.left = '50%';
-          title.style.top = '50%';
-          title.style.transform = 'translate(-50%, -50%)';
-          title.style.maxWidth = '55%';
-          title.style.textAlign = 'center';
-          if (!window.__biDMHeaderFixLogged) {
-            window.__biDMHeaderFixLogged = true;
-            biLog('[header] dm title centered');
-          }
+        centerDMHeaderTitle(title);
+      }
+
+      // Inbox route (/direct/ or /direct/inbox/): the title is the signed-in
+      // username (Instagram's own account-switcher control, no href). There is
+      // no reliable anchor icon here (no back button), so find it by matching
+      // text against the username we already resolved from the nav row
+      // (window.__biLastProfileHref, set independently per-webview by
+      // reportProfile() — each tab has its own JS realm). Cached after the
+      // first hit so this doesn't re-scan the document every apply() pass.
+      let dmInboxTitleEl = null;
+      function fixDMInboxHeader() {
+        if (dmInboxTitleEl && dmInboxTitleEl.isConnected) return;
+        const username = (window.__biLastProfileHref || '').replace(/\\//g, '').toLowerCase();
+        if (!username) return;
+        let title = null;
+        const candidates = document.querySelectorAll('span, div, button, a');
+        for (let i = 0; i < candidates.length; i++) {
+          const el = candidates[i];
+          if (el.children.length > 0) continue;
+          if ((el.textContent || '').trim().toLowerCase() !== username) continue;
+          const r = el.getBoundingClientRect();
+          if (r.top < 0 || r.top > 100) continue;
+          title = clickableFor(el) || el;
+          break;
         }
+        if (!title) return;
+        dmInboxTitleEl = title;
+        centerDMHeaderTitle(title);
+        if (!window.__biDMHeaderFixLogged) {
+          window.__biDMHeaderFixLogged = true;
+          biLog('[header] dm inbox title centered');
+        }
+      }
+
+      function fixDMHeader() {
+        if (!isTopFrame) return;
+        if (/^\\/direct\\/t\\//.test(location.pathname)) { fixDMThreadHeader(); return; }
+        if (/^\\/direct\\/(inbox\\/?)?$/.test(location.pathname)) { fixDMInboxHeader(); }
       }
 
       // DM thread message list scrolls inside its own container (fixed header
@@ -1729,20 +1832,17 @@ enum ContentFilter {
 
         // The logo lives inside a small clickable control. IG sometimes renders
         // a feed-switcher CARET either as a separate svg sibling next to the
-        // logo's box, or nested inside the same box alongside the logo — both
-        // observed live. Identify hides/centers by the logo's own identity
-        // instead of an "exactly one svg" count, so a transient extra icon
-        // (badge, caret, anything) can never skip the fix and leave the logo
-        // unstyled for a pass (the previous count-gate's failure mode, seen as
-        // the logo snapping left or a caret flashing on screen).
+        // logo's box, or nested inside the same box alongside the logo, and can
+        // remount either one on scroll (a compact/sticky header variant) — all
+        // observed live. A DOM-relationship heuristic ("the box's next sibling",
+        // "svgs nested in the same box") breaks the instant that relationship
+        // shifts, which is exactly what scrolling seems to trigger. Centering by
+        // identity + hiding by GEOMETRY (anything small sitting near the header's
+        // horizontal center, once the logo box is pinned there) is robust to
+        // that: it doesn't matter how the caret nests or which pass remounted
+        // it, only where it visually sits relative to the now-centered logo.
         const logoBox = logo.closest('a, [role="link"], [role="button"], button') || logo.parentElement;
         if (!logoBox.querySelector('article')) {
-          // Hide any svg sharing the box with the logo that isn't the logo
-          // itself (a nested caret/badge).
-          logoBox.querySelectorAll('svg').forEach(function(svg) {
-            if (svg === logo) return;
-            if (svg.style.display !== 'none') svg.style.display = 'none';
-          });
           if (logoBox.style.position !== 'absolute') {
             logoBox.style.position = 'absolute';
             logoBox.style.left = '50%';
@@ -1755,14 +1855,20 @@ enum ContentFilter {
           if (logoBox.style.pointerEvents !== 'none') {
             logoBox.style.pointerEvents = 'none';
           }
-          // Caret sibling: a tiny (<44px) box right after the centered logo box,
-          // rendered outside it rather than nested inside.
-          const sib = logoBox.nextElementSibling;
-          if (sib && sib.querySelector && sib.querySelector('svg') &&
-              !sib.querySelector('article') &&
-              sib.getBoundingClientRect().width < 44) {
-            sib.style.display = 'none';
-          }
+          // Forces a synchronous layout so the rect below reflects the
+          // positioning just applied above, not last frame's stale layout.
+          const headerRect = header.getBoundingClientRect();
+          const centerX = headerRect.left + headerRect.width / 2;
+          header.querySelectorAll('svg').forEach(function(svg) {
+            if (svg === logo || svg.id === '__bi_star_btn') return;
+            if (svg.closest('#__bi_star_btn, article')) return;
+            const r = svg.getBoundingClientRect();
+            if (r.width === 0 || r.width >= 44) return;
+            const cx = r.left + r.width / 2;
+            if (Math.abs(cx - centerX) < 60 && svg.style.display !== 'none') {
+              svg.style.display = 'none';
+            }
+          });
         }
 
         if (!document.getElementById('__bi_star_btn')) {
