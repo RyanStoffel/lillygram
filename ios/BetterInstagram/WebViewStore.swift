@@ -321,9 +321,9 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     private func updateBottomClearance(for webView: WKWebView, navVisible: Bool) {
         let bottom = navVisible ? Self.bottomTabBarClearance : 0
         guard webView.scrollView.contentInset.bottom != bottom ||
-                webView.scrollView.scrollIndicatorInsets.bottom != bottom else { return }
+                webView.scrollView.verticalScrollIndicatorInsets.bottom != bottom else { return }
         webView.scrollView.contentInset.bottom = bottom
-        webView.scrollView.scrollIndicatorInsets.bottom = bottom
+        webView.scrollView.verticalScrollIndicatorInsets.bottom = bottom
         let target = targetLabel(for: webView)
         print("[BI-geometry] target=\(target) navVisible=\(navVisible) bottomInset=\(bottom)")
     }
@@ -334,10 +334,27 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             .map { String(describing: $0.key) } ?? "unknown"
     }
 
+    private func diagnosticURL(_ url: URL?) -> String {
+        guard let url else { return "nil" }
+        let path: String
+        if url.path.hasPrefix("/direct/t/") {
+            path = "/direct/t/<id>/"
+        } else if url.path.hasPrefix("/stories/") {
+            path = "/stories/<id>/"
+        } else if ["/reel/", "/reels/", "/p/", "/tv/"].contains(where: url.path.hasPrefix) {
+            path = "/\(url.path.split(separator: "/").first ?? "media")/<id>/"
+        } else if url.path.split(separator: "/").count == 1, url.path != "/" {
+            path = "/<profile>/"
+        } else {
+            path = url.path
+        }
+        return "\(url.scheme ?? "https")://\(url.host ?? "unknown")\(path)"
+    }
+
     private func navigationSnapshot(for webView: WKWebView, url: URL? = nil) -> String {
         let scroll = webView.scrollView.contentOffset
         return "active=\(activeTarget) target=\(targetLabel(for: webView)) " +
-            "url=\((url ?? webView.url)?.absoluteString ?? "nil") isLoading=\(webView.isLoading) " +
+            "url=\(diagnosticURL(url ?? webView.url)) isLoading=\(webView.isLoading) " +
             "offset=(\(Int(scroll.x)),\(Int(scroll.y)))"
     }
 
@@ -943,7 +960,8 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 // page's own biFavReady drops it for good.
                 favoritesFeedReady = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                    guard let self, let home = self.webViews[.home] else { return }
+                    guard let self, generation == self.harvestGeneration,
+                          let home = self.webViews[.home] else { return }
                     self.reload(home, reason: "post-harvest-generation-\(generation)")
                 }
             }
@@ -1362,8 +1380,11 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     /// resolution from leaking into the next one.
     @MainActor
     private func resetAccountDerivedState(loggedOut: Bool) {
-        // Invalidate any harvest still in flight for the previous account.
+        // Invalidate and dispose any harvest still in flight for the previous
+        // account so a late didFinish cannot extract its edges under the new
+        // generation after logout/account switch.
         harvestGeneration += 1
+        destroyHarvestWebView(reason: loggedOut ? "logout" : "account switch")
         cachedFavEdgesJSON = nil
         preloadedFromDiskJSON = nil
         UserDefaults.standard.removeObject(forKey: Self.favEdgesCacheKey)
@@ -1513,7 +1534,7 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         restoreScrollPositionIfNeeded(for: webView)
         webView.evaluateJavaScript(ContentFilter.reapplyCall, completionHandler: nil)
         webView.evaluateJavaScript(
-            "({version: window.__biVersion || null, reapply: typeof window.__biReapply, href: location.href})"
+            "({version: window.__biVersion || null, reapply: typeof window.__biReapply})"
         ) { [weak self, weak webView] value, error in
             guard let self, let webView else { return }
             print("[BI-health] target=\(self.targetLabel(for: webView)) value=\(String(describing: value)) " +

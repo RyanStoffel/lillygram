@@ -18,9 +18,11 @@ confirm that exact console line before judging behavior.
 **Verified in code and fixed:**
 
 - Pull-to-refresh now has explicit `idle` → `pullCommitted` → `rebuilding`
-  phases. The committed phase keeps the current document and native refresh
-  spinner visible with no splash; only after 0.4 s does the rebuild splash
-  appear and the actual re-harvest/home load begin.
+  phases. The committed phase keeps the current document uncovered and the
+  native refresh control active with no splash; only after 0.4 s does the
+  rebuild splash appear and the actual re-harvest/home load begin. Whether the
+  spinner is visually clear below Instagram's live header still needs device
+  confirmation.
 - `selfClassChurn()` no longer suppresses Instagram removing a `__bi_*` hide
   marker. Marker removal is treated as real work and the owning article is
   immediately re-filtered; the jsdom gate now covers this regression.
@@ -37,10 +39,12 @@ confirm that exact console line before judging behavior.
 
 **Implemented conservatively; needs device confirmation:**
 
-- DM reel entry now marks the trusted share-card activation before forwarding
-  it, hides the newly mounted viewer in the MutationObserver microtask, waits
-  briefly for stable fullscreen geometry (hard 400 ms reveal fallback), then
-  reveals with a centered scale/opacity transition. Reduce Motion bypasses it.
+- DM reel entry now marks a share-card activation before forwarding it, hides
+  the newly mounted viewer in the MutationObserver microtask, waits briefly for
+  stable fullscreen geometry (hard 400 ms reveal fallback), then reveals with a
+  centered scale/opacity transition. Reduce Motion bypasses it. The URL-less
+  card detector is a broad large-media-card heuristic, so the device round must
+  also confirm ordinary shared posts/photos are never gated as reels.
 - The geometric home-caret rule and heuristic DM message-scroller selection are
   intentionally retained pending real DOM evidence. They now reassert their
   styles and emit bounded captures rather than being broadened blindly.

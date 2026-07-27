@@ -62,15 +62,18 @@ A reel opened from a DM plays, but reel-chaining is disabled:
   lock releases); and SPA navigation from one reel permalink to a *different*
   one is swallowed. Back/exit stays untouched.
 
-**DM reel entry presentation (2026-07-27, pending device confirmation).** The
-trusted share-card activation sets a short-lived pending flag before Instagram
-receives the forwarded click/navigation (persisted across a resulting document
-load). While pending, the main MutationObserver hides the first mounted reel
+**DM reel entry presentation (2026-07-27, pending device confirmation).** A
+share-card activation sets a short-lived pending flag before Instagram receives
+the forwarded click/navigation (persisted across a resulting document load).
+While pending, the main MutationObserver hides the first mounted reel
 video/dialog in the same mutation microtask, waits for stable near-fullscreen
 geometry, and then reveals it with a short centered scale/opacity transition.
 A 400 ms hard fallback always reveals the surface, and Reduce Motion skips the
-entire gate. `[dm-pop] ancestors=...` captures rects, transforms, transitions,
-and active animations to identify Instagram's actual slide owner if it remains.
+entire gate. The URL-less trigger currently recognizes a large DM media card,
+not a proven reel identity, so device testing must include ordinary shared
+posts/photos to rule out false gating. `[dm-pop] ancestors=...` captures rects,
+transforms, transitions, and active animations to identify Instagram's actual
+slide owner if it remains.
 
 **DM share-card single tap (resolved and confirmed 2026-07-22).** Instagram Web
 requires two taps on the same shared reel in both WKWebView and mobile Safari.

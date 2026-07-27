@@ -166,10 +166,10 @@ produces black-base-black safe-area flicker.
 `window.__biReapply()`, `window.__biNavigate(...)`, and the harvest extraction.
 
 Native navigation requests go through one tracing wrapper. `[BI-nav]` records a
-monotonic id/reason plus active tab, target, URL, loading state, and scroll
-offset for each explicit load/reload and delegate lifecycle event. Each injected
-document logs a `[boot]` id/frame URL, and `didFinish` prints a versioned
-`[BI-health]` probe. All diagnostics are console-only.
+monotonic id/reason plus active tab, target, redacted route, loading state, and
+scroll offset for each explicit load/reload and delegate lifecycle event. Each
+injected document logs a `[boot]` id/frame and redacted route, and `didFinish`
+prints a versioned `[BI-health]` probe. All diagnostics are console-only.
 
 ## Build & target
 

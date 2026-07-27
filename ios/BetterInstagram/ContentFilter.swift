@@ -96,6 +96,15 @@ enum ContentFilter {
 
       // ---- route helpers -------------------------------------------------
 
+      function diagnosticPath(path) {
+        path = String(path || '/');
+        if (/^\\/direct\\/t\\//.test(path)) return '/direct/t/<id>/';
+        if (/^\\/stories\\//.test(path)) return '/stories/<id>/';
+        if (/^\\/(reels?|p|tv)\\//.test(path)) return '/' + path.split('/')[1] + '/<id>/';
+        if (/^\\/[A-Za-z0-9._]+\\/?$/.test(path) && path !== '/') return '/<profile>/';
+        return path;
+      }
+
       function isReelSectionPage() {
         return /^\\/reels\\/(audio|videos)\\//.test(location.pathname);
       }
@@ -1082,7 +1091,7 @@ enum ContentFilter {
       function articleDiagnosticID(article) {
         if (!article || !article.querySelector) return '?';
         const media = article.querySelector('a[href^="/p/"], a[href^="/reel/"], a[href^="/reels/"]');
-        return (media && media.getAttribute('href')) || articleAuthor(article) || '?';
+        return (media && diagnosticPath(media.getAttribute('href'))) || ('node:' + diagnosticNodeID(article));
       }
 
       function beginFeedDiagnostic(reason) {
@@ -1119,7 +1128,8 @@ enum ContentFilter {
         const oldPath = lastRoutePath;
         const newPath = location.pathname;
         lastRoutePath = newPath;
-        if (oldPath !== newPath) biLog('[route] ' + oldPath + ' -> ' + newPath + ' doc=' + documentID);
+        if (oldPath !== newPath) biLog('[route] ' + diagnosticPath(oldPath) + ' -> ' +
+          diagnosticPath(newPath) + ' doc=' + documentID);
         updateScrollLock();
         reportNavVisibility();
         reportBackgroundColor();
@@ -1226,7 +1236,7 @@ enum ContentFilter {
         const until = Date.now() + 900;
         dmReelPending = { until: until, source: source };
         try { sessionStorage.setItem('__biDMReelPendingUntil', String(until)); } catch (e) {}
-        biLog('[dm-pop] pending source=' + source + ' path=' + location.pathname);
+        biLog('[dm-pop] pending source=' + source + ' path=' + diagnosticPath(location.pathname));
       }
 
       function dmReelPendingActive() {
@@ -1937,7 +1947,8 @@ enum ContentFilter {
           if (!text || text.length > 60) return;
           const r = el.getBoundingClientRect();
           if (r.top < 0 || r.top > 110 || r.width <= 0 || r.height <= 0) return;
-          candidates.push({ tag: el.tagName, role: el.getAttribute('role') || '', text: text.slice(0, 40),
+          candidates.push({ tag: el.tagName, role: el.getAttribute('role') || '',
+            textLength: text.length, ownUsernameMatch: !!username && text.toLowerCase() === username,
             rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
             ancestry: shortAncestry(el, 4) });
         });
@@ -1991,7 +2002,8 @@ enum ContentFilter {
       let dmScrollFixContainer = null;
       function fixDirectThreadScroll() {
         if (!isTopFrame || !/^\\/direct\\/t\\//.test(location.pathname)) return;
-        let container = dmScrollFixContainer && dmScrollFixContainer.isConnected ? dmScrollFixContainer : null;
+        const cachedContainer = dmScrollFixContainer && dmScrollFixContainer.isConnected ? dmScrollFixContainer : null;
+        let container = cachedContainer;
         let maxOverflow = 0;
         const plausible = [];
         const captureScrollGeometry = (window.__biDMScrollScanCount || 0) < 6;
@@ -2007,8 +2019,7 @@ enum ContentFilter {
               top: Math.round(node.scrollTop), client: node.clientHeight, scroll: node.scrollHeight, max: overflow,
               ancestry: shortAncestry(node, 4) });
           }
-          if (!container && overflow > maxOverflow) { maxOverflow = overflow; container = node; }
-          if (container === dmScrollFixContainer && overflow > maxOverflow) maxOverflow = overflow;
+          if (!cachedContainer && overflow > maxOverflow) { maxOverflow = overflow; container = node; }
         });
         if (!container) return;
         dmScrollFixContainer = container;
@@ -2639,7 +2650,7 @@ enum ContentFilter {
           run('report-background', reportBackgroundColor);
           if (measureApply) recordApplyTiming(clockNow() - started, timings);
         } catch (e) {
-          biLog('[apply-error] stage=' + stage + ' path=' + location.pathname + ' doc=' + documentID +
+          biLog('[apply-error] stage=' + stage + ' path=' + diagnosticPath(location.pathname) + ' doc=' + documentID +
             ' error=' + (e && e.message ? e.message : e));
         }
       }
@@ -2655,18 +2666,21 @@ enum ContentFilter {
         setTimeout(fire, wait);
       }
 
-      postLog('[boot] filter running on ' + location.pathname + ' id=' + documentID +
-        ' frame=' + (isTopFrame ? 'top' : 'sub') + ' url=' + location.href);
+      postLog('[boot] filter running on ' + diagnosticPath(location.pathname) + ' id=' + documentID +
+        ' frame=' + (isTopFrame ? 'top' : 'sub') + ' origin=' + location.origin);
       if (isTopFrame && !window.__biLifecycleHooked) {
         window.__biLifecycleHooked = true;
         window.addEventListener('pageshow', function(e) {
-          biLog('[lifecycle] pageshow persisted=' + !!e.persisted + ' doc=' + documentID + ' path=' + location.pathname);
+          biLog('[lifecycle] pageshow persisted=' + !!e.persisted + ' doc=' + documentID +
+            ' path=' + diagnosticPath(location.pathname));
         });
         window.addEventListener('pagehide', function(e) {
-          biLog('[lifecycle] pagehide persisted=' + !!e.persisted + ' doc=' + documentID + ' path=' + location.pathname);
+          biLog('[lifecycle] pagehide persisted=' + !!e.persisted + ' doc=' + documentID +
+            ' path=' + diagnosticPath(location.pathname));
         });
         document.addEventListener('visibilitychange', function() {
-          biLog('[lifecycle] visibility=' + document.visibilityState + ' doc=' + documentID + ' path=' + location.pathname);
+          biLog('[lifecycle] visibility=' + document.visibilityState + ' doc=' + documentID +
+            ' path=' + diagnosticPath(location.pathname));
         });
       }
       if (isTopFrame && !window.__biErrHooked) {
