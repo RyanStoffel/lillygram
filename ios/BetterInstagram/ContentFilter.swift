@@ -27,7 +27,6 @@ enum ContentFilter {
           html, body { background-color: rgb(255, 255, 255) !important; }
           section[role="dialog"], div[role="dialog"], section[role="region"] { background-color: rgb(255, 255, 255) !important; }
         }
-        svg[aria-label*="chevron" i], svg[aria-label*="down" i], svg[aria-label*="caret" i] { display: none !important; }
         a[href="/reels/"] { display: none !important; }
         a[href="/explore/"] { display: none !important; }
         svg[aria-label="Reels"] { display: none !important; }
@@ -42,14 +41,6 @@ enum ContentFilter {
         a, [role="button"], [role="link"] { cursor: pointer; }
         a, button, [role="button"], [role="link"], input, select, textarea { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
         #__bi_star_btn { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); z-index: 3; background: none; border: 0; padding: 8px; display: flex; align-items: center; }
-        @keyframes biPopCenter {
-          0% { transform: scale(0.85); opacity: 0; }
-          100% { transform: scale(1); opacity: 1; }
-        }
-        div[role="dialog"]:has(video), section[role="dialog"]:has(video) {
-          animation: biPopCenter 0.22s cubic-bezier(0.175, 0.885, 0.32, 1.255) !important;
-          transform-origin: center center !important;
-        }
         @keyframes __bi_rot { to { transform: rotate(360deg); } }
       `;
 
@@ -1540,23 +1531,6 @@ enum ContentFilter {
         if (back) hide(clickableFor(back));
       }
 
-      function fixDMHeader() {
-        if (!/^\\/direct\\//.test(location.pathname)) return;
-        const header = document.querySelector('header, div[role="banner"]');
-        if (!header) return;
-        const title = header.querySelector('h1, h2, [role="heading"]');
-        if (title && title.parentElement) {
-          const parent = title.parentElement;
-          if (parent.style.position !== 'absolute') {
-            parent.style.position = 'absolute';
-            parent.style.left = '50%';
-            parent.style.transform = 'translateX(-50%)';
-            parent.style.textAlign = 'center';
-            parent.style.zIndex = '2';
-          }
-        }
-      }
-
       // DM share cards render a tiny preview image scaled way up. When the
       // img carries a srcset, swap in its largest candidate.
       function fixDirectMediaQuality() {
@@ -1648,25 +1622,30 @@ enum ContentFilter {
         if (!header || header === document.body) return;
         if (getComputedStyle(header).position === 'static') header.style.position = 'relative';
 
-        header.querySelectorAll('svg').forEach(function(s) {
-          const label = (s.getAttribute('aria-label') || '').toLowerCase();
-          if (label.indexOf('chevron') !== -1 || label.indexOf('down') !== -1 || label.indexOf('caret') !== -1) {
-            const parent = s.closest('a, button, div') || s.parentElement;
-            if (parent && parent !== header && !parent.querySelector('article')) {
-              hide(parent);
-            }
-          }
-        });
-
+        // The logo lives inside a small clickable control. IG sometimes renders
+        // a feed-switcher CARET as a SEPARATE svg sibling next to the logo's box
+        // (NOT inside it). Hide only that caret, then center the logo box exactly
+        // as before (guarded so a shared icon row is never dragged along).
         const logoBox = logo.closest('a, [role="link"], [role="button"], button') || logo.parentElement;
-        if (logoBox && !logoBox.querySelector('article')) {
+        if (logoBox.querySelectorAll('svg').length === 1 && !logoBox.querySelector('article')) {
           if (logoBox.style.position !== 'absolute') {
             logoBox.style.position = 'absolute';
             logoBox.style.left = '50%';
             logoBox.style.top = '50%';
             logoBox.style.transform = 'translate(-50%, -50%)';
             logoBox.style.zIndex = '2';
+          }
+          // The header logo is decorative here — clicking it must do nothing
+          // (no feed switcher, no scroll-to-top), so make it inert.
+          if (logoBox.style.pointerEvents !== 'none') {
             logoBox.style.pointerEvents = 'none';
+          }
+          // Caret sibling: a tiny (<44px) box right after the centered logo box.
+          const sib = logoBox.nextElementSibling;
+          if (sib && sib.querySelector && sib.querySelector('svg') &&
+              !sib.querySelector('article') &&
+              sib.getBoundingClientRect().width < 44) {
+            sib.style.display = 'none';
           }
         }
 
@@ -1913,13 +1892,13 @@ enum ContentFilter {
       }
 
       function armFeedWatchdog() {
-        if (!isTopFrame || window.__biWatchArmed || window.__biFavReadyPosted) return;
+        if (!isTopFrame || window.__biWatchArmed) return;
         if (location.pathname !== '/' || !favoritesOn) return;
         if (!favEdges || !favEdges.length) return;
         window.__biWatchArmed = true;
         setTimeout(function() {
           try {
-            if (window.__biFavReadyPosted || !feedLooksStuck()) return;
+            if (!feedLooksStuck()) return;
             biLog('[watchdog] favorites feed stuck (no favorites rendered, spinner present)');
             if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.biFeedStuck) {
               window.webkit.messageHandlers.biFeedStuck.postMessage(true);
@@ -2032,6 +2011,11 @@ enum ContentFilter {
         if (location.pathname === path) return;
         window.history.pushState({}, '', path);
         window.dispatchEvent(new PopStateEvent('popstate'));
+        setTimeout(function() {
+          if (location.pathname !== path) {
+            window.location.assign(path);
+          }
+        }, 300);
       }
 
       function clickableFor(el) {
@@ -2128,7 +2112,6 @@ enum ContentFilter {
           if (isSearch) fixSearchPage();
           if (isDirect) {
             fixDirectInbox();
-            fixDMHeader();
             fixDirectMediaQuality();
             upgradeDirectPreviews();
             fixDMShareCardCursor();
@@ -2152,7 +2135,7 @@ enum ContentFilter {
       function scheduleApply() {
         if (applyScheduled) return;
         applyScheduled = true;
-        const wait = Math.max(0, 150 - (Date.now() - lastApply));
+        const wait = Math.max(0, 300 - (Date.now() - lastApply));
         function fire() {
           if (touchActive) { setTimeout(fire, 50); return; }
           requestAnimationFrame(apply);

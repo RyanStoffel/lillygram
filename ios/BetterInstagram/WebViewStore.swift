@@ -241,7 +241,7 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         // zero built-in awareness the tab bar exists, and scrolls content all
         // the way to the physical bottom edge. Reserve real scroll room so
         // the last item is never left underneath the tab bar.
-        webView.scrollView.contentInset.bottom = (target == .direct) ? 34 : Self.bottomTabBarClearance
+        webView.scrollView.contentInset.bottom = Self.bottomTabBarClearance
         webView.isOpaque = false
         webView.backgroundColor = .systemBackground
         webView.scrollView.backgroundColor = .systemBackground
@@ -253,7 +253,7 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         webView.removeInputAccessoryView()
         if target == .home {
             let refresh = UIRefreshControl()
-            refresh.tintColor = .secondaryLabel
+            refresh.tintColor = UIColor.white.withAlphaComponent(0.7)
             refresh.addTarget(self, action: #selector(handlePullToRefresh), for: .valueChanged)
             webView.scrollView.refreshControl = refresh
             webView.scrollView.alwaysBounceVertical = true
@@ -1047,15 +1047,10 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     /// refresh spinner ends when the fresh favorites feed renders (biFavReady)
     /// or after a safety timeout.
     @objc private func handlePullToRefresh() {
-        guard !refreshInFlight else { return }
         refreshInFlight = true
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        refreshingViaPull = true
         print("[BI] pull-to-refresh: re-harvest + reload home")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            guard let self else { return }
-            self.refreshingViaPull = true
-            self.reharvestAndReloadHome()
-        }
+        reharvestAndReloadHome()
         DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in
             self?.endRefresh()
         }
