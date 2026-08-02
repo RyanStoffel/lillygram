@@ -930,40 +930,45 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         let preloadAlreadyCorrect = preloadedFromDiskJSON != nil && json == preloadedFromDiskJSON
 
         cachedFavEdgesJSON = json
-        deliverFavEdges()
         // Refresh the preamble so window.__biFavEdgesPreload carries the latest
         // edges on any future page load (the document-start SSR splice reads it),
         // and persist to disk so the *next* launch can arm this same warm-start
         // preload before its first load.
         installUserScripts()
         UserDefaults.standard.set(json, forKey: Self.favEdgesCacheKey)
+
         // After the first successful harvest, reload home once so the
         // now-cached favorites splice lands deterministically (no
         // cold-start race) — unless the disk-preloaded first paint already
         // proved itself correct above, in which case reloading would be a
         // pure no-op and is skipped.
+        let willReloadHome = !didReloadHomeForFavorites && !preloadAlreadyCorrect
+        if willReloadHome {
+            // Re-arm BEFORE delivering edges, and skip delivering to home
+            // below: the still-visible pre-reload home page can render a real
+            // (if not yet deterministic) favorites feed and independently
+            // flip favoritesFeedReady true (or run an uncovered DOM-filter
+            // pass) the instant it receives fresh edges — which used to
+            // happen a moment before this reload fired. That's the visible
+            // "loads in, then flashes as it reloads" bug: the splash leaves
+            // early, the reload briefly shows the raw page (with Instagram's
+            // own chrome, before our filters catch up), then the real
+            // favorites feed reappears. Re-arming first and never delivering
+            // to the about-to-be-discarded home page closes that window; only
+            // the *reloaded* page's own biFavReady can drop the splash now.
+            favoritesFeedReady = false
+        }
+        deliverFavEdges(includingHome: !willReloadHome)
+
         if !didReloadHomeForFavorites {
             didReloadHomeForFavorites = true
             if preloadAlreadyCorrect {
                 print("[BI-harvest] disk preload matched live harvest; skipping post-harvest reload")
-            } else {
-                // The pre-reload page can render a real (if not yet
-                // deterministic) favorites feed the instant deliverFavEdges()
-                // above unblocks its held request — which can flip
-                // favoritesFeedReady true and drop the splash a moment before
-                // this scheduled reload actually fires. That's the visible
-                // "loads in, then flashes as it reloads" bug: the splash
-                // leaves early, the reload briefly shows the raw page (with
-                // Instagram's own chrome, before our filters catch up), then
-                // the real favorites feed reappears. Re-arm it so the splash
-                // stays up for the entire cycle and only the *reloaded*
-                // page's own biFavReady drops it for good.
-                favoritesFeedReady = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                    guard let self, generation == self.harvestGeneration,
-                          let home = self.webViews[.home] else { return }
-                    self.reload(home, reason: "post-harvest-generation-\(generation)")
-                }
+            } else if let home = webViews[.home] {
+                // No artificial delay: the splash is already back up (re-armed
+                // above) before this reload is even requested, so there is
+                // nothing left for a delay to protect against.
+                reload(home, reason: "post-harvest-generation-\(generation)")
             }
         }
     }
@@ -994,9 +999,16 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     /// Push cached favorites edges into every webview. Only the home tab's feed
     /// needs them visually, but the other tabs also hold their preloaded feed
     /// request, so delivering everywhere stops them waiting the full timeout.
-    private func deliverFavEdges() {
+    /// `includingHome: false` skips the home tab specifically — used from
+    /// finishHarvest() when home is about to reload anyway (the fresh edges
+    /// are already armed as its preload for that reload): delivering to the
+    /// still-visible, about-to-be-discarded pre-reload home page would only
+    /// let it react on its own before the reload lands. See
+    /// research-2026-07-27-coldstart-reload-flash.md.
+    private func deliverFavEdges(includingHome: Bool = true) {
         guard let json = cachedFavEdgesJSON else { return }
-        for webView in webViews.values {
+        for (target, webView) in webViews {
+            if target == .home && !includingHome { continue }
             webView.callAsyncJavaScript(
                 "window.__biSetFavEdges && window.__biSetFavEdges(payload);",
                 arguments: ["payload": json],
@@ -1607,10 +1619,21 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         } else if message.name == "biFavReady" {
             DispatchQueue.main.async {
                 self.favoritesFeedReady = true
-                // The feed rendered: clear any stuck state and reset the recovery
-                // budget so a future stuck feed gets a fresh recovery attempt.
+                // The feed rendered (or at least the data/apply-ready signal
+                // fired): clear the retry screen if it was already showing.
+                // Deliberately NOT resetting feedRecoveryAttempts here anymore
+                // — it used to be reset on every biFavReady, which replenished
+                // handleFeedStuck()'s one-auto-recovery budget on every single
+                // reload cycle. When biFavReady can fire without the feed ever
+                // actually showing a visible favorite (SSR splice + apply()
+                // both succeed, but React hasn't hydrated the DOM with the
+                // spliced data yet), that turned into an infinite
+                // reload→biFavReady→watchdog-stuck→reload loop that never
+                // reached the retry screen. The budget now only refills on an
+                // explicit new attempt: applyFavoritesSelection(),
+                // retryFavoritesFeed(), or an account switch
+                // (resetAccountDerivedState) — see known-issues.md §4.
                 self.feedStuck = false
-                self.feedRecoveryAttempts = 0
                 self.endRefresh()
                 #if DEBUG
                 if ProcessInfo.processInfo.environment["BI_STORY_TIMING_PROBE"] == "1",

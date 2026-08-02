@@ -329,6 +329,90 @@ actually fires (`[BI-harvest] disk preload matched live harvest; skipping
 post-harvest reload`) when favorites haven't changed, and that a changed
 favorites list / new posts still correctly falls back to the reload.
 
+**Follow-up (2026-07-27): the `7b4e3e1` re-arm fix genuinely landed (verified
+via `git show`) but does not stop the flash — it reproduces every cold launch.**
+Full diagnosis in `research-2026-07-27-coldstart-reload-flash.md`. Two real,
+stacked gaps, not one: (1, primary/structural) `biFavReady` — the only thing
+that sets `favoritesFeedReady = true` — fires the instant harvested data is
+spliced into a parsed response (`installSSRFeedSplice()`'s `JSON.parse` hook,
+or the XHR splice in `rewriteFeedText()`), with no check that the page has
+actually run its own DOM-filter pass yet; `ensureStyleInjected()` (the CSS hide
+injection) and `fixHomeHeader()` (logo centering, caret hiding, favorites star)
+only run inside `apply()`, which is on its own independent `requestAnimationFrame`/
+`document.body` timer (`start()`) with zero ordering relationship to `biFavReady`.
+(2, contributing) `finishHarvest()` calls `deliverFavEdges()` — which unblocks
+the still-visible pre-reload page's held feed request — one line **before**
+re-arming `favoritesFeedReady = false`, so that page can independently
+re-flip the flag (or run an uncovered `scheduleApply()`) in the gap before the
+fixed 300 ms reload timer fires.
+
+**Implemented (2026-07-27), both halves of the recommended fix.** (1)
+`ContentFilter.swift`: the three `biFavReady` call sites now call
+`markFavDataReady()` instead of posting directly; `biFavReady` only actually
+posts from `maybePostFavReady()` once **both** `window.__biFavDataReady` and a
+new `window.__biFirstApplyDone` (set in a `finally` block at the end of
+`apply()`, so it's true after the first pass regardless of whether a later
+stage threw) are true — so `favoritesFeedReady` can no longer flip true before
+this document's own `ensureStyleInjected()`/`fixHomeHeader()` pass has run. (2)
+`WebViewStore.swift`'s `finishHarvest()`: when a post-harvest reload is about
+to happen, `favoritesFeedReady = false` is now set **before** delivering
+edges, and `deliverFavEdges(includingHome:)` skips the home tab specifically
+in that branch (the about-to-be-discarded pre-reload page never gets a chance
+to react); the now-pointless fixed 0.3 s pre-reload delay was also removed
+since the splash's coverage no longer depends on it. `tools/check.sh` passes
+and a simulator build succeeds. **Needs on-device confirmation** that the
+flash is actually gone across a few real cold launches — static analysis and
+the jsdom harness can't observe the real HTML-streaming/paint timing this bug
+lives in. See `research-2026-07-27-coldstart-reload-flash.md` for the full
+diagnosis and line citations.
+
+**Hardened same day: bounded fallback on the apply()-gate.** A first on-device
+run after the above landed hit a **separate, pre-existing** failure — the
+harvest webview never reached `didFinish` across four straight generations (no
+`[BI-nav] ... event=didFinish reason=harvest-generation-N` and no
+`[BI-harvest] count=` in the console at all), so `finishHarvest()` was never
+even reached, and the disk-preloaded SSR splice also never matched
+(`[favsplice] spliced favorites into SSR feed data` never logged) — both
+mechanisms this fix doesn't touch. That run would have hung under the old code
+too (nothing ever made `biFavReady`'s underlying data-ready condition true),
+but it exposed a real gap in the new apply()-gate: if `apply()` ever stalls or
+throws for a reason unrelated to favorites, gating `biFavReady` on it with no
+escape hatch can turn a cosmetic flash into a permanent hang — worse than the
+bug it fixes. `markFavDataReady()` now arms a bounded 1.5 s fallback timer: if
+`apply()` hasn't completed by then, `biFavReady` posts anyway
+(`[favsplice] apply() did not complete within 1.5s of data-ready; posting
+biFavReady anyway`). Normal case is unaffected (apply()'s first pass typically
+completes well under 1.5 s of `document.body` existing). The harvest-webview-
+stuck-at-didCommit symptom itself is still open and unrelated — likely
+Instagram-side throttling from the watchdog's own rapid-fire retry loop (four
+full page loads of instagram.com in under 90 s); needs a longer device capture
+to confirm whether `didFinish` eventually fires late or never at all.
+
+**Second device round found a real, pre-existing infinite-loop bug, now
+fixed.** With the harvest no longer hanging, a fresh log showed the SSR splice
+succeeding at the data layer (`[favsplice] spliced favorites into SSR feed
+data`) but the DOM briefly still showing 0 visible favorites
+(`[feed] 2 articles, 2 hidden` — React hadn't yet hydrated the spliced data
+into the article nodes `filterArticle()` was evaluating). That's expected to
+self-correct via the MutationObserver within the watchdog's normal 9 s window
+— except the `biFavReady` handler (`WebViewStore.swift`, `userContentController
+didReceive`) was unconditionally resetting `feedRecoveryAttempts = 0` on
+**every** `biFavReady`, including ones that fire without the feed ever
+actually showing a favorite. That replenished `handleFeedStuck()`'s intended
+"one automatic recovery, then show the retry screen" budget on every single
+reload cycle, producing exactly what was reported: reload → `biFavReady`
+fires → budget resets → watchdog finds it still stuck 9 s later → auto-recover
+again → reload → repeat forever, splash re-showing each time, never reaching
+`FeedErrorView`. This predates today's flash fix (the reset line is untouched
+by it) — the flash fix likely only made it easier to notice by changing when
+`biFavReady` fires relative to the DOM hydration race. Fixed: the reset was
+removed from the `biFavReady` handler; the budget now only refills on an
+explicit new attempt (`applyFavoritesSelection()`, `retryFavoritesFeed()`, or
+an account switch via `resetAccountDerivedState()`), so a feed that's still
+stuck after one watchdog-triggered recovery now correctly reaches the retry
+screen instead of looping. `tools/check.sh` and a simulator build both pass.
+**Needs on-device confirmation**, along with the original flash fix.
+
 ---
 
 ## 5. Sync custom (app) favorites → official Instagram Favorites list

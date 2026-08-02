@@ -60,6 +60,51 @@ enum ContentFilter {
         postLog(msg);
       }
 
+      // biFavReady tells native it's safe to drop the launch/resave splash.
+      // Posting it as soon as favorites DATA has been spliced into a parsed
+      // response (window.__biFavDataReady) is not enough on its own — that
+      // only proves Relay/React WILL render favorites once it runs, not that
+      // THIS document has actually styled itself yet: the hide-CSS
+      // (ensureStyleInjected) and the header restyle (fixHomeHeader) only run
+      // inside apply(), on document.body's own independent timer (see
+      // start() below), with no ordering relationship to when the streamed
+      // feed data happens to parse. Gating on window.__biFirstApplyDone too
+      // (set at the end of apply()) means the splash can only drop once this
+      // document has actually run its own DOM-filter pass — closing the
+      // "reload flashes Instagram's raw nav" gap. See
+      // docs/research-2026-07-27-coldstart-reload-flash.md.
+      window.__biFavDataReady = false;
+      window.__biFirstApplyDone = false;
+
+      function maybePostFavReady() {
+        if (!isTopFrame || window.__biFavReadyPosted) return;
+        if (!window.__biFavDataReady || !window.__biFirstApplyDone) return;
+        window.__biFavReadyPosted = true;
+        try { webkit.messageHandlers.biFavReady.postMessage(true); } catch (e) {}
+      }
+
+      function markFavDataReady() {
+        window.__biFavDataReady = true;
+        maybePostFavReady();
+        // Bounded safety net: apply()'s first pass normally follows within a
+        // fraction of a second of document.body existing (see start()), so
+        // this should never actually fire. But apply() stalling or throwing
+        // for a reason unrelated to favorites (a DOM-filter bug, a slow
+        // device) must never be able to permanently withhold biFavReady once
+        // the data itself is genuinely ready — that would trade the cold-start
+        // flash for an occasional hard hang, which is worse. If apply() still
+        // hasn't completed 1.5s after data became ready, post anyway.
+        if (!window.__biFavReadyPosted) {
+          setTimeout(function() {
+            if (window.__biFavDataReady && !window.__biFirstApplyDone) {
+              biLog('[favsplice] apply() did not complete within 1.5s of data-ready; posting biFavReady anyway');
+              window.__biFirstApplyDone = true;
+            }
+            maybePostFavReady();
+          }, 1500);
+        }
+      }
+
       function ensureStyleInjected() {
         if (!document.getElementById('__bi_filter_style') && document.head) {
           document.head.appendChild(style);
@@ -593,10 +638,7 @@ enum ContentFilter {
               if (did && !window.__biSSRSpliced) {
                 window.__biSSRSpliced = true;
                 biLog('[favsplice] spliced favorites into SSR feed data');
-                if (isTopFrame && !window.__biFavReadyPosted) {
-                  window.__biFavReadyPosted = true;
-                  try { webkit.messageHandlers.biFavReady.postMessage(true); } catch (e) {}
-                }
+                markFavDataReady();
               }
             }
           } catch (e) {}
@@ -688,10 +730,7 @@ enum ContentFilter {
           biLog('[search] filtered search results to accounts-only (xhr)');
         }
         if (isFeedLike && window.__biNativeFavMode) {
-          if (location.pathname === '/' && !window.__biFavReadyPosted) {
-            window.__biFavReadyPosted = true;
-            try { webkit.messageHandlers.biFavReady.postMessage(true); } catch (e) {}
-          }
+          if (location.pathname === '/') markFavDataReady();
         }
         // In native-favorites mode IG serves the favorites feed itself; never
         // rewrite a feed response there or Relay throws and the feed spins
@@ -703,11 +742,10 @@ enum ContentFilter {
             if (feedChanged) {
               changed = true;
               biLog('[favsplice] swapped favorites into home response');
-              // Tell native the favorites feed is ready so it can drop the splash.
-              if (location.pathname === '/' && !window.__biFavReadyPosted) {
-                window.__biFavReadyPosted = true;
-                try { webkit.messageHandlers.biFavReady.postMessage(true); } catch (e) {}
-              }
+              // Tell native the favorites feed is ready (once this document
+              // has also styled itself — see markFavDataReady) so it can drop
+              // the splash.
+              if (location.pathname === '/') markFavDataReady();
             } else {
               if (before && before.length) feedRenderedAlgorithmic = true;
               biLog('[favsplice] NO SWAP (favEdges=' + (favEdges ? favEdges.length : 0) +
@@ -2652,6 +2690,16 @@ enum ContentFilter {
         } catch (e) {
           biLog('[apply-error] stage=' + stage + ' path=' + diagnosticPath(location.pathname) + ' doc=' + documentID +
             ' error=' + (e && e.message ? e.message : e));
+        } finally {
+          // Marks this document as having run its own DOM-filter pass at
+          // least once (style injected, header restyled) — see
+          // maybePostFavReady(). Set even if a stage above threw, since the
+          // earlier stages (style, header) already ran by then and waiting
+          // forever for a clean pass would just re-cover a working page.
+          if (!window.__biFirstApplyDone) {
+            window.__biFirstApplyDone = true;
+            maybePostFavReady();
+          }
         }
       }
 
