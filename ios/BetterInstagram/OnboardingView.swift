@@ -1,5 +1,14 @@
 import SwiftUI
 
+/// "<marketing version> (<build number>)", e.g. "0.1.0 (2)", read from the
+/// bundle so Settings/bug reports never show a stale hardcoded string.
+let appVersionString: String = {
+    let info = Bundle.main.infoDictionary
+    let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+    let build = info?["CFBundleVersion"] as? String ?? "?"
+    return "\(version) (\(build))"
+}()
+
 /// Favorites picker used in two places: the one-time post-login onboarding
 /// (fullscreen, with a Skip option) and the star tab (always available, for
 /// editing after onboarding — including after skipping it).
@@ -320,11 +329,11 @@ struct AppSettingsView: View {
                 }
 
                 Section("Legal") {
-                    Link(destination: URL(string: "https://betterinstagram.app/privacy")!) {
+                    Link(destination: URL(string: "https://ryanstoffel.github.io/better-instagram/privacy.html")!) {
                         Label("Privacy Policy", systemImage: "hand.raised")
                             .foregroundStyle(.primary)
                     }
-                    Link(destination: URL(string: "https://betterinstagram.app/terms")!) {
+                    Link(destination: URL(string: "https://ryanstoffel.github.io/better-instagram/terms.html")!) {
                         Label("Terms of Service", systemImage: "doc.text")
                             .foregroundStyle(.primary)
                     }
@@ -334,7 +343,7 @@ struct AppSettingsView: View {
                     HStack {
                         Text("Version")
                         Spacer()
-                        Text("1.0 (1)")
+                        Text(appVersionString)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -416,12 +425,12 @@ struct BugReportView: View {
         \(bugDescription)
 
         ---
-        App Version: 1.0 (1)
+        App Version: \(appVersionString)
         iOS Version: \(UIDevice.current.systemVersion)
         Device: \(UIDevice.current.model)
         """
         let encodedBody = body.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        if let mailURL = URL(string: "mailto:support@betterinstagram.app?subject=BetterInstagram%20Bug%20Report&body=\(encodedBody)") {
+        if let mailURL = URL(string: "mailto:stoffel.thomas.ryan@gmail.com?subject=BetterInstagram%20Bug%20Report&body=\(encodedBody)") {
             UIApplication.shared.open(mailURL)
         }
         didSend = true
