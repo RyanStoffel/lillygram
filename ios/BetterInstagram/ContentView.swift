@@ -27,6 +27,9 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
+            bridge.pageBackground
+                .ignoresSafeArea()
+
             TabView(selection: tabSelection) {
                 Tab(value: NavTarget.home) {
                     webContent(for: .home)
@@ -58,6 +61,7 @@ struct ContentView: View {
                 refreshOnboarding()
             }
             .onChange(of: bridge.favoritesEditRequests) { _, _ in
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 showFavoritesEditor = true
             }
             .onChange(of: store.favoritesFeedReady) { _, ready in
@@ -122,6 +126,9 @@ struct ContentView: View {
         Binding(
             get: { selectedTab },
             set: { target in
+                if selectedTab != target {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                }
                 store.setActive(target)
                 createdTabs.insert(target)
                 selectedTab = target
@@ -240,6 +247,7 @@ struct ContentView: View {
             }
         }
         .toolbarVisibility(isTabBarVisible ? .visible : .hidden, for: .tabBar)
+        .animation(.easeInOut(duration: 0.25), value: isTabBarVisible)
     }
 }
 

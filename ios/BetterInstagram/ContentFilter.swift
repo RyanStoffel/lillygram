@@ -19,6 +19,14 @@ enum ContentFilter {
       const style = document.createElement('style');
       style.id = '__bi_filter_style';
       style.textContent = `
+        @media (prefers-color-scheme: dark) {
+          html, body { background-color: rgb(12, 16, 20) !important; }
+          section[role="dialog"], div[role="dialog"], section[role="region"] { background-color: rgb(12, 16, 20) !important; }
+        }
+        @media (prefers-color-scheme: light) {
+          html, body { background-color: rgb(255, 255, 255) !important; }
+          section[role="dialog"], div[role="dialog"], section[role="region"] { background-color: rgb(255, 255, 255) !important; }
+        }
         a[href="/reels/"] { display: none !important; }
         a[href="/explore/"] { display: none !important; }
         svg[aria-label="Reels"] { display: none !important; }
@@ -30,6 +38,7 @@ enum ContentFilter {
         html.__bi_noscroll * { touch-action: none !important; }
         html.__bi_noscroll [role="dialog"]:not(:has(video)), html.__bi_noscroll [role="dialog"]:not(:has(video)) * { touch-action: auto !important; }
         a, [role="button"], [role="link"] { cursor: pointer; }
+        a, button, [role="button"], [role="link"], input, select, textarea { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
         #__bi_star_btn { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); z-index: 3; background: none; border: 0; padding: 8px; display: flex; align-items: center; }
         @keyframes __bi_rot { to { transform: rotate(360deg); } }
       `;
@@ -549,6 +558,10 @@ enum ContentFilter {
               if (did && !window.__biSSRSpliced) {
                 window.__biSSRSpliced = true;
                 biLog('[favsplice] spliced favorites into SSR feed data');
+                if (isTopFrame && !window.__biFavReadyPosted) {
+                  window.__biFavReadyPosted = true;
+                  try { webkit.messageHandlers.biFavReady.postMessage(true); } catch (e) {}
+                }
               }
             }
           } catch (e) {}
@@ -634,6 +647,12 @@ enum ContentFilter {
         if (isSearchLike && filterSearchPayload(payload)) {
           changed = true;
           biLog('[search] filtered search results to accounts-only (xhr)');
+        }
+        if (isFeedLike && window.__biNativeFavMode) {
+          if (location.pathname === '/' && !window.__biFavReadyPosted) {
+            window.__biFavReadyPosted = true;
+            try { webkit.messageHandlers.biFavReady.postMessage(true); } catch (e) {}
+          }
         }
         // In native-favorites mode IG serves the favorites feed itself; never
         // rewrite a feed response there or Relay throws and the feed spins
@@ -1968,10 +1987,15 @@ enum ContentFilter {
         return null;
       }
 
+      function defaultPageColor() {
+        return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
+          ? 'rgb(12, 16, 20)'
+          : 'rgb(255, 255, 255)';
+      }
+
       function reportBackgroundColor() {
         if (!isTopFrame) return;
-        if (/^\\/(stories|reels?)\\//.test(location.pathname) || isImmersiveSurface(shouldLockScroll())) return;
-        const bg = currentPageBackground();
+        const bg = currentPageBackground() || defaultPageColor();
         if (!bg) return;
         if (window.__biLastBg !== bg) {
           window.__biLastBg = bg;

@@ -39,6 +39,9 @@ const dom = new JSDOM(
       // --- native preamble (WebViewStore.installUserScripts) ---
       window.__biFavorites = ['favedaccount', 'someoneelse'];
       window.__biFavoritesEnabled = true;
+      window.__biFavEdgesPreload = JSON.stringify({
+        edges: [{ node: { media: { pk: '100', user: { username: 'favedaccount' }, image_versions2: { candidates: [{ url: 'https://example.com/a.jpg' }] } } } }]
+      });
 
       // --- WKScriptMessageHandler shim ---
       const post = (name) => (body) => logs.push([name, body]);
@@ -145,6 +148,24 @@ setTimeout(() => {
     check('apply() ran without error', !has('[error] apply failed'),
       biLogs().filter((l) => l.startsWith('[error]')).join(' | '));
 
+    const presentations = () => logs.filter((l) => l[0] === 'biPresentation');
+    const lastPresentation = () => {
+      const p = presentations();
+      return p.length ? p[p.length - 1][1] : null;
+    };
+    const navigate = (path) => {
+      const before = presentations().length;
+      window.history.pushState({}, '', path);
+      return presentations().length - before;
+    };
+
+    // --- SSR splice biFavReady post check ---
+    // Simulating Instagram's bootloader parsing streamed SSR JSON containing feed__timeline
+    window.JSON.parse(JSON.stringify({ data: { feed__timeline: { edges: [] } } }));
+    check('SSR feed splice posts biFavReady',
+      logs.some((l) => l[0] === 'biFavReady'),
+      'logs: ' + JSON.stringify(logs.filter((l) => l[0] === 'biFavReady')));
+
     // Native live-update path (WebViewStore.applyFavoritesSelection).
     let liveUpdateOk = true;
     let liveUpdateErr = '';
@@ -173,7 +194,42 @@ setTimeout(() => {
         check('degraded state hides unknown-author articles',
           unknown.classList.contains('__bi_hidden'),
           'classes: ' + unknown.className);
-        report();
+
+        // --- immersive HOLDS through the close animation (regression guard) --
+        // The path front-run flips immersive on instantly, but isImmersiveSurface
+        // must STILL run the geometry detectors so activeStorySurface latches.
+        // Otherwise immersive would flip back to false the instant the route
+        // reverts to the feed — mid-close-animation — reintroducing the base-color
+        // flash the geometry "hold through close" was built to prevent. jsdom has
+        // no layout, so we stub a fullscreen <video> as the story surface and
+        // drive the observer to warm the cache, then assert immersive survives
+        // the route back to the feed while the surface is still onscreen.
+        navigate('/'); // feed baseline (immersive=false)
+        let storyFullscreen = false;
+        const storyVideo = window.document.createElement('video');
+        storyVideo.getBoundingClientRect = () => storyFullscreen
+          ? { width: window.innerWidth, height: window.innerHeight, top: 0, left: 0,
+              right: window.innerWidth, bottom: window.innerHeight, x: 0, y: 0 }
+          : { width: 8, height: 8, top: 0, left: 0, right: 8, bottom: 8, x: 0, y: 0 };
+        window.document.body.appendChild(storyVideo); // outside <main>/<article>
+
+        navigate('/stories/someuser/999/'); // pre-route geometry captured small
+        storyFullscreen = true;
+        storyVideo.classList.add('bi-probe'); // class mutation -> observer warms cache
+
+        setTimeout(() => {
+          const warmed = lastPresentation();
+          const newPosts = navigate('/'); // close: surface still fullscreen+connected
+          check('immersive holds through close animation (geometry cache latched)',
+            lastPresentation() && lastPresentation().immersive === true && newPosts === 0,
+            'warmed=' + JSON.stringify(warmed) +
+              ' afterClose=' + JSON.stringify(lastPresentation()) + ' newPosts=' + newPosts);
+          // cleanup so the run ends on a clean, non-immersive feed state.
+          storyFullscreen = false;
+          storyVideo.remove();
+          navigate('/');
+          setTimeout(report, 100);
+        }, 150);
       }, 700);
     }, 50);
   }, 600);

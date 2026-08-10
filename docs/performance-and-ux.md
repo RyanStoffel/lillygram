@@ -48,8 +48,12 @@ measurable standards and the implementation techniques to hit them. R4 is
   base color on close. Routes and navigation requests do not speculatively
   change color: the userscript snapshots pre-route media geometry and publishes
   immersive state only when a new viewer surface mounts or an existing element
-  becomes fullscreen. It holds that state through the close animation until the
-  surface disappears. This avoids Instagram's intermediate navigation states,
+  becomes fullscreen — except that story and reel-permalink routes front-run
+  geometry: `isImmersiveSurface()` short-circuits true on those paths so the
+  synchronous `onRouteChange`→`updateScrollLock`→`postPresentation` pass flips
+  the safe area to black the instant the URL changes, before geometry confirms
+  (kills the page-color flash at viewer open). It holds that state through the
+  close animation until the surface disappears. This avoids Instagram's intermediate navigation states,
   which caused black-base-black flicker. Inactive preloaded tabs cannot overwrite
   active chrome, and all safe-area changes disable animation. _[cite pending]_
 - **Two splashes to mask feed-assembly work.** Both fire *instantly* (identity

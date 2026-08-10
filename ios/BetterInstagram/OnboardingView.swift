@@ -145,6 +145,7 @@ struct FavoritesPickerView: View {
     private var footer: some View {
         VStack(spacing: 10) {
             Button {
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
                 onCommit(selection)
                 didSave = true
                 Task {
@@ -187,6 +188,7 @@ struct FavoritesPickerView: View {
     }
 
     private func toggle(_ profile: FavoriteProfile) {
+        UISelectionFeedbackGenerator().selectionChanged()
         if let index = selection.firstIndex(where: { $0.id == profile.id }) {
             selection.remove(at: index)
         } else {

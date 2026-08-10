@@ -299,13 +299,9 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     private func publishCachedPresentation(for webView: WKWebView) {
         let identifier = ObjectIdentifier(webView)
         let base = pageBackgroundCache[identifier] ?? Color(.systemBackground)
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            bridge.isNavVisible = navVisibleCache[identifier] ?? true
-            bridge.pageBackground = base
-            bridge.safeAreaBackground = immersiveCache[identifier] == true ? .black : base
-        }
+        bridge.isNavVisible = navVisibleCache[identifier] ?? true
+        bridge.pageBackground = base
+        bridge.safeAreaBackground = base
     }
 
     private func setPresentation(locked: Bool, immersive: Bool, for webView: WKWebView) {
@@ -315,11 +311,7 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         webView.scrollView.isScrollEnabled = !locked
         guard webView === webViews[activeTarget] else { return }
         let base = pageBackgroundCache[identifier] ?? Color(.systemBackground)
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            bridge.safeAreaBackground = immersive ? .black : base
-        }
+        bridge.safeAreaBackground = base
     }
 
     // MARK: - Favorites
@@ -1465,15 +1457,8 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                         self.pageBackgroundCache[ObjectIdentifier(source)] = color
                     }
                     if source === self.webViews[self.activeTarget] {
-                        var transaction = Transaction()
-                        transaction.disablesAnimations = true
-                        withTransaction(transaction) {
-                            self.bridge.pageBackground = color
-                            if let source,
-                               self.immersiveCache[ObjectIdentifier(source)] != true {
-                                self.bridge.safeAreaBackground = color
-                            }
-                        }
+                        self.bridge.pageBackground = color
+                        self.bridge.safeAreaBackground = color
                     }
                 }
             }
