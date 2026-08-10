@@ -11,8 +11,8 @@ All notable changes to this project are documented here. Versions follow
   `com.lillygram.app`), display name, GitHub repo
   (`RyanStoffel/better-instagram` -> `RyanStoffel/lillygram`), Pages URLs,
   in-app links, docs, and tooling.
-- Switched code signing to automatic, targeting the Apple Developer team
-  actually signed into this Mac (`PD623TGVBL`), in prep for a TestFlight build.
+- Switched code signing to `Automatic` (was a hardcoded `CODE_SIGN_IDENTITY`)
+  for App Store Connect API-driven archiving.
 - Fixed two dead `betterinstagram.app` legal links in the favorites-editor
   footer that were never updated when the working Privacy/Terms pages shipped.
 

@@ -175,7 +175,7 @@ prints a versioned `[BI-health]` probe. All diagnostics are console-only.
 
 - **`ios/Lillygram.xcodeproj/project.pbxproj` is the source of truth.** It
   was hand-edited (deployment target **iOS 26.0**, `DEVELOPMENT_TEAM
-  PD623TGVBL`, explicit file list). `xcodegen` is **not installed** — do **not**
+  9D3GQSX699`, explicit file list). `xcodegen` is **not installed** — do **not**
   regenerate from `project.yml` (it would drop the hand edits and the iOS-26
   target). New Swift files must be added to the pbxproj manually.
 - Bundle id `com.lillygram.app`, Swift 5, portrait only.
