@@ -8,8 +8,8 @@ Instagram that still feels like the native app, minus the parts engineered to
 keep you scrolling.** No private/native Instagram API, no jailbreak — the
 same category of technique as a browser content blocker or userscript.
 
-Current version: **0.2.0** (build 4). Pre-release; being prepared for
-TestFlight (see [Status & known limitations](#status--known-limitations)).
+Current version: **0.3.0**. Pre-release; distributed to a small tester group
+through TestFlight (see [Status & known limitations](#status--known-limitations)).
 
 ## Inspiration
 
@@ -116,10 +116,23 @@ distributed to a small group of testers via TestFlight instead. In brief:
 
 Full detail in [`docs/known-issues.md`](docs/known-issues.md).
 
-## Versioning
+## Versioning and releases
 
-Semantic versioning (`MARKETING_VERSION` in the Xcode project);
-`CURRENT_PROJECT_VERSION` is the build number, bumped on every release.
+Lillygram uses semantic versions for the shipped app:
+
+- **Patch** (`x.y.Z`) — bug fixes, performance work, and behavior-preserving
+  refactors.
+- **Minor** (`x.Y.0`) — backward-compatible user-visible features.
+- **Major** (`X.0.0`) — intentional product-contract or compatibility breaks.
+
+The Xcode `MARKETING_VERSION`, top `CHANGELOG.md` entry, README version, and
+GitHub Release tag must agree. Publishing `v<version>` as a GitHub Release from
+`main` automatically validates, signs, uploads, and waits for the build to
+become available to Internal Testers. CI derives the App Store build number as
+`<released-commit-count>.<workflow-attempt>`; the pbxproj build number is only a
+local fallback. Pure docs/tests/CI changes do not create redundant TestFlight
+builds.
+
 Changes are tracked in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## License

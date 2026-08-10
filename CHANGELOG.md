@@ -1,7 +1,22 @@
 # Changelog
 
-All notable changes to this project are documented here. Versions follow
-`MARKETING_VERSION (CURRENT_PROJECT_VERSION)` from the Xcode project.
+All notable changes to this project are documented here. Releases use the Xcode
+`MARKETING_VERSION`; CI assigns TestFlight build numbers from the released
+commit count and workflow attempt.
+
+## [0.3.0] — 2026-08-09
+
+### Added
+- GitHub Release-driven CI/CD: every release published from `main` is
+  validated, archived, distribution-signed, uploaded to App Store Connect,
+  and monitored until it is valid and available to Internal Testers.
+- CI gates for release metadata, the injected JavaScript harness, an unsigned
+  iOS simulator build, and archive-time bug-report configuration injection.
+
+### Changed
+- Formalized prompt classification and semantic release rules so fixes bump
+  patch, features bump minor, breaking changes bump major, and non-runtime
+  docs/tests/CI work does not create redundant TestFlight builds.
 
 ## [0.2.0] (build 5) — 2026-08-09
 

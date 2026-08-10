@@ -10,3 +10,7 @@ xcuserdata/
 # tools
 tools/node_modules/
 tools/build/
+
+# Python
+__pycache__/
+*.py[cod]

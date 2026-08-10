@@ -1,0 +1,171 @@
+name: TestFlight
+run-name: TestFlight ${{ github.event.release.tag_name }}
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testflight-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Archive, upload, and verify
+    runs-on: macos-26
+    timeout-minutes: 45
+    environment: testflight
+    env:
+      ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      ASC_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+      BUG_REPORT_TOKEN: ${{ secrets.BUG_REPORT_TOKEN }}
+      ASC_APP_ID: ${{ vars.APP_STORE_CONNECT_APP_ID }}
+      INTERNAL_GROUP_ID: ${{ vars.TESTFLIGHT_INTERNAL_GROUP_ID }}
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+
+    steps:
+      - name: Check out the released commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Validate deployment configuration
+        run: |
+          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY BUG_REPORT_TOKEN ASC_APP_ID INTERNAL_GROUP_ID APPLE_TEAM_ID; do
+            if test -z "${!name}"; then
+              echo "Missing required TestFlight configuration: $name" >&2
+              exit 1
+            fi
+          done
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "Release tag must point to a commit on main" >&2
+            exit 1
+          }
+          python3 tools/validate-release.py --tag "${{ github.event.release.tag_name }}"
+
+      - name: Compute immutable build number
+        id: version
+        run: |
+          version="${{ github.event.release.tag_name }}"
+          version="${version#v}"
+          commit_count="$(git rev-list --count HEAD)"
+          build_number="${commit_count}.${GITHUB_RUN_ATTEMPT}"
+          echo "marketing_version=$version" >> "$GITHUB_OUTPUT"
+          echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
+          echo "Deploying Lillygram $version ($build_number)"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tools/package-lock.json
+
+      - name: Run userscript release gate
+        run: |
+          npm ci --prefix tools
+          tools/check.sh
+
+      - name: Prepare App Store Connect credentials
+        id: credentials
+        run: |
+          key_path="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          printf '%s' "$ASC_PRIVATE_KEY" > "$key_path"
+          chmod 600 "$key_path"
+          echo "key_path=$key_path" >> "$GITHUB_OUTPUT"
+
+      - name: Archive
+        run: |
+          xcodebuild \
+            -project ios/Lillygram.xcodeproj \
+            -scheme Lillygram \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Lillygram.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "${{ steps.credentials.outputs.key_path }}" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            MARKETING_VERSION="${{ steps.version.outputs.marketing_version }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.version.outputs.build_number }}" \
+            BUG_REPORT_TOKEN="$BUG_REPORT_TOKEN" \
+            archive
+
+      - name: Verify archived metadata
+        run: |
+          plist="$RUNNER_TEMP/Lillygram.xcarchive/Products/Applications/Lillygram.app/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" = "${{ steps.version.outputs.marketing_version }}"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")" = "${{ steps.version.outputs.build_number }}"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :BugReportToken' "$plist")" = "$BUG_REPORT_TOKEN"
+
+      - name: Write export options
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store-connect</string>
+            <key>teamID</key>
+            <string>${APPLE_TEAM_ID}</string>
+            <key>signingStyle</key>
+            <string>automatic</string>
+            <key>destination</key>
+            <string>export</string>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Export distribution-signed IPA
+        run: |
+          xcodebuild \
+            -exportArchive \
+            -archivePath "$RUNNER_TEMP/Lillygram.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "${{ steps.credentials.outputs.key_path }}" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: Upload to App Store Connect
+        run: |
+          xcrun altool \
+            --upload-app \
+            --file "$RUNNER_TEMP/export/Lillygram.ipa" \
+            --type ios \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"
+
+      - name: Wait for TestFlight availability
+        run: |
+          python3 -m venv "$RUNNER_TEMP/asc-venv"
+          "$RUNNER_TEMP/asc-venv/bin/pip" install --quiet 'PyJWT[crypto]'
+          "$RUNNER_TEMP/asc-venv/bin/python" tools/wait-for-testflight.py \
+            --key-id "$ASC_KEY_ID" \
+            --issuer-id "$ASC_ISSUER_ID" \
+            --key-path "${{ steps.credentials.outputs.key_path }}" \
+            --app-id "$ASC_APP_ID" \
+            --group-id "$INTERNAL_GROUP_ID" \
+            --build-number "${{ steps.version.outputs.build_number }}"
+
+      - name: Publish deployment summary
+        run: |
+          {
+            echo "### TestFlight deployment complete"
+            echo "- Version: ${{ steps.version.outputs.marketing_version }}"
+            echo "- Build: ${{ steps.version.outputs.build_number }}"
+            echo "- App Store Connect processing: VALID"
+            echo "- Internal tester group: available"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove private key
+        if: always()
+        run: rm -f "${{ steps.credentials.outputs.key_path }}"
