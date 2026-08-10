@@ -98,6 +98,14 @@ and `evaluateJavaScript` / `callAsyncJavaScript`.
   other scheme (`instagram://`, `fb://`, `itms-apps:` — the "open in the app"
   nags) is cancelled. `createWebViewWith` (`target="_blank"`) follows the same
   in-app/Safari split.
+- **Back/forward swipe.** `allowsBackForwardNavigationGestures` is disabled;
+  each webview instead gets two `UIScreenEdgePanGestureRecognizer`s (left
+  edge → `goBack()`, right edge → `goForward()`) added in `makeWebView`.
+  WebKit's built-in interactive gesture forces a full document reload — a
+  visible white/blank flash — when it lands on a same-document
+  (`history.pushState`) history entry, which is exactly Instagram's DM
+  thread ↔ inbox transition. Calling `goBack()`/`goForward()` directly
+  instead fires a same-document `popstate` with no reload.
 - **Process & navigation recovery.** `webViewWebContentProcessDidTerminate`,
   `didFail` and `didFailProvisionalNavigation` run a bounded (2-attempt)
   recovery. Visible tabs reload with their scroll offset stashed and restored

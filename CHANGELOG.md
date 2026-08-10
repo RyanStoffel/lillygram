@@ -4,6 +4,18 @@ All notable changes to this project are documented here. Releases use the Xcode
 `MARKETING_VERSION`; CI assigns TestFlight build numbers from the released
 commit count and workflow attempt.
 
+## [0.3.1] — 2026-08-10
+
+### Fixed
+- Swipe-right-to-go-back (e.g. leaving a DM thread) showed a ~1s white/blank
+  flash before landing on the previous screen. Root cause:
+  `allowsBackForwardNavigationGestures`'s built-in interactive gesture forces
+  a full document reload when the swipe lands on a same-document
+  (`history.pushState`) SPA history entry, which is exactly how Instagram's
+  DM thread <-> inbox transition works. Replaced it with manual
+  `UIScreenEdgePanGestureRecognizer`s that call `goBack()`/`goForward()`
+  directly, which fire a same-document `popstate` with no reload.
+
 ## [0.3.0] — 2026-08-09
 
 ### Added

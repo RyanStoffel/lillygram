@@ -415,6 +415,37 @@ screen instead of looping. `tools/check.sh` and a simulator build both pass.
 
 ---
 
+## 4a. Swipe-back white flash (2026-08-10)
+
+**Requirement:** R4. **Status:** implemented, pending on-device confirmation.
+
+**Symptom (reported, issue #3).** Swiping right to go back — e.g. leaving a
+DM thread for the inbox — showed roughly a 1s flash of a blank white screen
+before landing on the previous screen.
+
+**Root cause.** `allowsBackForwardNavigationGestures` was `true`.
+`WKWebView`'s built-in interactive swipe-back gesture is documented WebKit
+behavior that forces a full document reload when the gesture lands on a
+same-document (`history.pushState`) history entry — exactly how Instagram's
+own client-side routing implements DM thread ↔ inbox and most other in-app
+transitions. The reload's blank initial paint, before the injected
+document-start CSS/JS re-applies, is the flash. A programmatic `goBack()`
+call does not have this problem: for a same-document entry it fires a
+`popstate` event with no network reload.
+
+**The fix.** `WebViewStore.makeWebView` sets
+`allowsBackForwardNavigationGestures = false` and instead adds a
+`UIScreenEdgePanGestureRecognizer` pair per webview (left edge → `goBack()`,
+right edge → `goForward()`), calling the API directly on gesture end instead
+of letting WebKit drive its own interactive transition. `canGoBack`/
+`canGoForward` gate no-ops when there's no history in that direction.
+
+**Needs on-device confirmation** that the flash is gone and that the edge
+gesture doesn't conflict with any Instagram-side horizontal swipe interaction
+near the screen edges (e.g. a DM message swipe-to-reply).
+
+---
+
 ## 5. Sync custom (app) favorites → official Instagram Favorites list
 
 **Requirement:** R1. **Status:** two-way reconcile implemented and

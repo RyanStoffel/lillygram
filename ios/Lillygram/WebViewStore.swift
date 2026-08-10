@@ -262,7 +262,15 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        webView.allowsBackForwardNavigationGestures = true
+        // allowsBackForwardNavigationGestures's built-in interactive swipe
+        // triggers a full document reload (visible white flash) when it lands
+        // on a same-document (history.pushState) SPA entry — Instagram's DM
+        // thread <-> inbox transitions are exactly that. A direct goBack()/
+        // goForward() call fires a same-document popstate instead, with no
+        // reload, so the gesture is reimplemented manually below and driven
+        // through the API. See known-issues.md "Swipe-back white flash".
+        webView.allowsBackForwardNavigationGestures = false
+        addBackForwardSwipeGestures(to: webView)
         webView.removeInputAccessoryView()
         if target == .home {
             let refresh = UIRefreshControl()
@@ -1207,6 +1215,39 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             guard maxY > 0 else { return }
             scrollView.setContentOffset(CGPoint(x: 0, y: min(offset.y, maxY)), animated: false)
         }
+    }
+
+    // MARK: - Back/forward edge-swipe (SPA-safe replacement for allowsBackForwardNavigationGestures)
+
+    /// Manual replacement for `WKWebView.allowsBackForwardNavigationGestures`.
+    /// Mirrors its edge zones but calls `goBack()`/`goForward()` directly on
+    /// release instead of letting WebKit drive its own interactive
+    /// transition, which reloads (and flashes blank/white) on same-document
+    /// SPA history entries.
+    private func addBackForwardSwipeGestures(to webView: WKWebView) {
+        let back = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(handleBackSwipeGesture(_:)))
+        back.edges = .left
+        webView.addGestureRecognizer(back)
+
+        let forward = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(handleForwardSwipeGesture(_:)))
+        forward.edges = .right
+        webView.addGestureRecognizer(forward)
+    }
+
+    @objc private func handleBackSwipeGesture(_ gesture: UIScreenEdgePanGestureRecognizer) {
+        guard gesture.state == .ended,
+            let webView = gesture.view as? WKWebView,
+            webView.canGoBack
+        else { return }
+        webView.goBack()
+    }
+
+    @objc private func handleForwardSwipeGesture(_ gesture: UIScreenEdgePanGestureRecognizer) {
+        guard gesture.state == .ended,
+            let webView = gesture.view as? WKWebView,
+            webView.canGoForward
+        else { return }
+        webView.goForward()
     }
 
     // MARK: - Pull to refresh (home)
