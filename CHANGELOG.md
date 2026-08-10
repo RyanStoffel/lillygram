@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. Versions follow
 `MARKETING_VERSION (CURRENT_PROJECT_VERSION)` from the Xcode project.
 
-## [Unreleased]
+## [0.2.0] (build 5) — 2026-08-09
 
 ### Changed
 - Replaced the `mailto:` bug-report flow with direct submission as a GitHub

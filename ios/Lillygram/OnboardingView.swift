@@ -364,17 +364,16 @@ struct AppSettingsView: View {
     }
 }
 
-/// GitHub API config for the in-app bug reporter. `issuesToken` is a
-/// fine-grained personal access token scoped to ONLY
-/// `Issues: Read and write` on the private `RyanStoffel/lillygram-bugs`
-/// repo — nothing else (no Contents, no other repos). It ships inside the
-/// app bundle and is extractable by anyone with the IPA; that's an accepted
-/// tradeoff for a two-person TestFlight app, bounded by the token's narrow
-/// scope (worst case: someone spams issues on a private repo only Ryan can
-/// see — no code, no other repo, nothing else is reachable with it).
+/// GitHub API config for the in-app bug reporter. `issuesToken` is supplied
+/// through the archive's generated Info.plist so the credential is never
+/// committed to this public repository. The token is still extractable from
+/// the shipped app, so it must remain scoped to Issues access on only the
+/// private `RyanStoffel/lillygram-bugs` repo.
 private enum BugReportConfig {
     static let repo = "RyanStoffel/lillygram-bugs"
-    static let issuesToken = "REPLACE_WITH_FINE_GRAINED_PAT"
+    static var issuesToken: String {
+        Bundle.main.object(forInfoDictionaryKey: "BugReportToken") as? String ?? ""
+    }
 }
 
 private struct GitHubIssueRequest: Encodable {
