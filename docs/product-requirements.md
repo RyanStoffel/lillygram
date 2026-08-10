@@ -1,6 +1,6 @@
 # Product Requirements
 
-This is the **contract** for BetterInstagram. The four requirements below are
+This is the **contract** for Lillygram. The four requirements below are
 **hard and non-negotiable.** A change that violates one is a bug, not a
 trade-off. Each lists rationale and **acceptance criteria** that a future change
 can be tested against.

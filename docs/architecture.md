@@ -2,7 +2,7 @@
 
 ## One-paragraph model
 
-BetterInstagram is a thin SwiftUI shell around **four persistent `WKWebView`s**
+Lillygram is a thin SwiftUI shell around **four persistent `WKWebView`s**
 (one per tab: home, search, direct, profile) that all load the real
 `instagram.com` and **share a single `WKUserContentController`**. Home is created
 in `WebViewStore.init()`; search/direct/profile are created immediately from
@@ -12,17 +12,18 @@ injects one large JavaScript userscript at **document start** into every page.
 The userscript does all the "product": blocking reels/explore, locking DM reels,
 normalizing URL-less DM share cards to one physical tap, filtering the feed,
 fixing the header, and reporting page state back to Swift via message handlers.
-A **fifth hidden webview** exists only to harvest the favorites
-feed (see `favorites-feed.md`). Native and web talk over `postMessage` handlers
+A **fifth hidden webview** is created only while actively harvesting the
+favorites feed and is detached/destroyed after a successful extraction+density
+pass (see `favorites-feed.md`). Native and web talk over `postMessage` handlers
 and `evaluateJavaScript` / `callAsyncJavaScript`.
 
-## Files (all under `ios/BetterInstagram/`)
+## Files (all under `ios/Lillygram/`)
 
 | File | Role |
 | --- | --- |
-| `BetterInstagramApp.swift` | `@main` App; shows `ContentView`. |
+| `LillygramApp.swift` | `@main` App; shows `ContentView`. |
 | `ContentView.swift` | Root `TabView` (home/search/direct/profile), onboarding cover, favorites-editor sheet, the two splashes (`LaunchSplashView`/`ResaveSplashView`) chosen by `activeSplash`, and the `FeedErrorView` retry screen. |
-| `WebViewStore.swift` | Owns the 4 tab webviews (home eager; others created via `ensureWebView(for:)`, called for all three during the launch splash by `ContentView.preloadSecondaryTabs()` — see architecture note below) + the hidden harvest webview; the shared `WKUserContentController`; login detection; favorites sync/harvest; the home `UIRefreshControl` (pull-to-refresh → re-harvest + reload); all message-handler callbacks. The native brain. |
+| `WebViewStore.swift` | Owns the 4 tab webviews (home eager; others created via `ensureWebView(for:)`, called for all three during the launch splash by `ContentView.preloadSecondaryTabs()` — see architecture note below) + the disposable harvest webview; the shared `WKUserContentController`; login detection; favorites sync/harvest; navigation reason/id tracing; visibility-aware bottom clearance; and the home `UIRefreshControl` phase machine. The native brain. |
 | `ContentFilter.swift` | **The injected userscript**, as a Swift multiline string (`ContentFilter.script`), plus `harvestScript`. All web-side behavior lives here. |
 | `WebBridge.swift` | `NavTarget` enum (`home/search/direct/profile`) + `@Published` UI state (`isNavVisible`, `avatarURL`, `pageBackground`, `favoritesEditRequests`). |
 | `FavoritesStore.swift` | `UserDefaults`-backed favorites selection + onboarding-complete flag; `isFilterEnabled`. |
@@ -139,7 +140,7 @@ handled in `WebViewStore.userContentController(_:didReceive:)`:
 
 | Handler | Payload → effect |
 | --- | --- |
-| `biNav` | Bool → tab-bar visibility. |
+| `biNav` | Bool → tab-bar visibility and the source webview's outer bottom/indicator clearance (100 points while visible, zero while hidden). |
 | `biAvatar` | String → profile avatar URL. |
 | `biProfile` | String → detected own-profile href. |
 | `biBg` | CSS color → that webview's cached Instagram base background. Immersive viewers do not overwrite this cache. |
@@ -164,17 +165,23 @@ produces black-base-black safe-area flicker.
 `window.__biSetFavorites(...)`, `window.__biSetFavEdges(...)`,
 `window.__biReapply()`, `window.__biNavigate(...)`, and the harvest extraction.
 
+Native navigation requests go through one tracing wrapper. `[BI-nav]` records a
+monotonic id/reason plus active tab, target, redacted route, loading state, and
+scroll offset for each explicit load/reload and delegate lifecycle event. Each
+injected document logs a `[boot]` id/frame and redacted route, and `didFinish`
+prints a versioned `[BI-health]` probe. All diagnostics are console-only.
+
 ## Build & target
 
-- **`ios/BetterInstagram.xcodeproj/project.pbxproj` is the source of truth.** It
+- **`ios/Lillygram.xcodeproj/project.pbxproj` is the source of truth.** It
   was hand-edited (deployment target **iOS 26.0**, `DEVELOPMENT_TEAM
   9D3GQSX699`, explicit file list). `xcodegen` is **not installed** — do **not**
   regenerate from `project.yml` (it would drop the hand edits and the iOS-26
   target). New Swift files must be added to the pbxproj manually.
-- Bundle id `com.betterinstagram.app`, Swift 5, portrait only.
+- Bundle id `com.lillygram.app`, Swift 5, portrait only.
 - Build (no signing, simulator):
   ```sh
-  xcodebuild -project ios/BetterInstagram.xcodeproj -scheme BetterInstagram \
+  xcodebuild -project ios/Lillygram.xcodeproj -scheme Lillygram \
     -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
     CODE_SIGNING_ALLOWED=NO build
   ```

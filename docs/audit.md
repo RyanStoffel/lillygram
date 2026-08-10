@@ -1,6 +1,6 @@
 # Technical Audit
 
-An objective assessment of how BetterInstagram is currently built vs. 2026
+An objective assessment of how Lillygram is currently built vs. 2026
 best practice, with honest verdicts. This is an evaluation, not a change log —
 nothing here was implemented. Where a gap maps to an open item it links to
 [known-issues.md](known-issues.md).

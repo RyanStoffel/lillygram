@@ -110,7 +110,7 @@ struct ContentView: View {
                 EmptyView()
             }
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: activeSplash)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: activeSplash)
         .overlay {
             if store.feedStuck && selectedTab == .home {
                 FeedErrorView(retry: { store.retryFavoritesFeed() })
@@ -137,7 +137,11 @@ struct ContentView: View {
     }
 
     private var splashTransition: AnyTransition {
-        reduceMotion ? .identity : .asymmetric(insertion: .identity, removal: .opacity)
+        if reduceMotion { return .identity }
+        return .asymmetric(
+            insertion: .identity,
+            removal: .opacity.combined(with: .scale(scale: 0.97))
+        )
     }
 
     /// Which full-screen splash (if any) to show. Both cover the harvest + reload
@@ -147,8 +151,10 @@ struct ContentView: View {
     /// re-saving favorites, so it shows the update splash.
     private var activeSplash: SplashKind? {
         guard store.isLoggedIn, favoritesStore.isFilterEnabled else { return nil }
-        // Pull-to-refresh shows the branded launch splash over the rebuild.
-        if store.refreshingViaPull { return .launch }
+        // Keep the native refresh spinner and current document visible first;
+        // only cover the page once the delayed rebuild actually begins.
+        if store.refreshPhase == .pullCommitted { return nil }
+        if store.refreshPhase == .rebuilding { return .launch }
         // A just-tapped Save forces the update splash immediately, even before
         // the feed-ready flag has flipped (it's still stale-true for a moment).
         if resaveRequested { return .resave }
@@ -237,7 +243,7 @@ struct ContentView: View {
         Group {
             if createdTabs.contains(target) {
                 WebViewContainer(webView: store.webView(for: target))
-                    .ignoresSafeArea(edges: reduceTransparency ? [] : .bottom)
+                    .ignoresSafeArea(edges: !reduceTransparency && isTabBarVisible ? .bottom : [])
             } else {
                 // Shown for the instant it takes to create+load the webview on
                 // this tab's first visit only; already-created tabs never see it.
@@ -259,28 +265,31 @@ private struct FeedErrorView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color(.systemBackground).ignoresSafeArea()
             VStack(spacing: 16) {
                 Image(systemName: "star.slash")
                     .font(.system(size: 44, weight: .regular))
-                    .foregroundStyle(Color.white.opacity(0.7))
+                    .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
                 Text("Couldn't load your favorites")
                     .font(.headline)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.primary)
                     .accessibilityAddTraits(.isHeader)
                 Text("Instagram may have changed something. Try again in a moment.")
                     .font(.subheadline)
-                    .foregroundStyle(Color.white.opacity(0.55))
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 40)
-                Button(action: retry) {
+                Button {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    retry()
+                } label: {
                     Text("Retry")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.primary)
                         .padding(.horizontal, 28)
                         .padding(.vertical, 10)
-                        .background(Color.white.opacity(0.14), in: Capsule())
+                        .background(Color.primary.opacity(0.1), in: Capsule())
                 }
                 .padding(.top, 4)
                 .accessibilityHint("Tries loading your favorites feed again")
@@ -295,11 +304,11 @@ private struct AttributionFooter: View {
         VStack(spacing: 6) {
             Text("from")
                 .font(.footnote)
-                .foregroundStyle(Color.white.opacity(0.45))
+                .foregroundStyle(.secondary)
             Text("RYAN STOFFEL")
                 .font(.system(size: 20, weight: .bold))
                 .tracking(0.5)
-                .foregroundStyle(.white)
+                .foregroundStyle(.primary)
         }
         .padding(.bottom, 46)
     }
@@ -323,12 +332,11 @@ private struct AppIconMark: View {
 private struct LaunchSplashView: View {
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color(.systemBackground).ignoresSafeArea()
 
             VStack(spacing: 22) {
                 AppIconMark(size: 84)
                 ProgressView()
-                    .tint(Color.white.opacity(0.7))
                     .accessibilityLabel("Loading your favorites feed")
             }
 
@@ -346,14 +354,13 @@ private struct LaunchSplashView: View {
 private struct ResaveSplashView: View {
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color(.systemBackground).ignoresSafeArea()
             VStack(spacing: 22) {
                 AppIconMark(size: 84)
                 Text("Updating your favorites…")
                     .font(.subheadline)
-                    .foregroundStyle(Color.white.opacity(0.6))
+                    .foregroundStyle(.secondary)
                 ProgressView()
-                    .tint(Color.white.opacity(0.7))
                     .accessibilityLabel("Updating your favorites feed")
             }
             VStack {

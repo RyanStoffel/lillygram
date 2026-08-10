@@ -145,8 +145,15 @@ setTimeout(() => {
       'observe() calls: ' + observeCalls.length);
     check('observer delivered mutations after init', mutationBatches > 0,
       'batches: ' + mutationBatches);
-    check('apply() ran without error', !has('[error] apply failed'),
-      biLogs().filter((l) => l.startsWith('[error]')).join(' | '));
+    check('apply() ran without error', !has('[error] apply failed') && !has('[apply-error]'),
+      biLogs().filter((l) => l.startsWith('[error]') || l.startsWith('[apply-error]')).join(' | '));
+
+    // React can retain an article node while replacing its className, removing
+    // our hide marker. The observer must treat marker removal as real work and
+    // synchronously re-filter it rather than suppressing it as self churn.
+    const markerRemovalArticle = window.document.querySelector('article');
+    markerRemovalArticle.classList.add('react-remount', 'react-variant');
+    markerRemovalArticle.classList.remove('__bi_hidden');
 
     const presentations = () => logs.filter((l) => l[0] === 'biPresentation');
     const lastPresentation = () => {
@@ -186,6 +193,11 @@ setTimeout(() => {
     check('degraded flag set', window.__biFeedDegraded === true);
 
     setTimeout(() => {
+      check('removed hide marker is synchronously restored across simultaneous class changes',
+        markerRemovalArticle.classList.contains('__bi_hidden') &&
+          markerRemovalArticle.classList.contains('react-remount') &&
+          markerRemovalArticle.classList.contains('react-variant'),
+        'classes: ' + markerRemovalArticle.className);
       const unknown = window.document.createElement('article');
       unknown.innerHTML = '<div>no author link at all</div>';
       window.document.querySelector('main').appendChild(unknown);
@@ -228,7 +240,30 @@ setTimeout(() => {
           storyFullscreen = false;
           storyVideo.remove();
           navigate('/');
-          setTimeout(report, 100);
+
+          // --- DM thread picks the largest overflowing inner scroller -------
+          const makeScroller = (scrollHeight) => {
+            const node = window.document.createElement('div');
+            node.style.overflowY = 'auto';
+            Object.defineProperty(node, 'clientHeight', { value: 200 });
+            Object.defineProperty(node, 'scrollHeight', { value: scrollHeight });
+            return node;
+          };
+          const smallerScroller = makeScroller(300);
+          const largestScroller = makeScroller(900);
+          window.document.querySelector('main').append(smallerScroller, largestScroller);
+          navigate('/direct/t/test-thread/');
+          window.__biReapply();
+          setTimeout(() => {
+            check('DM scroll fallback selects the largest overflow container',
+              smallerScroller.style.paddingBottom === '' && largestScroller.style.paddingBottom === '28px',
+              'smaller=' + smallerScroller.style.paddingBottom +
+                ' largest=' + largestScroller.style.paddingBottom);
+            smallerScroller.remove();
+            largestScroller.remove();
+            navigate('/');
+            setTimeout(report, 100);
+          }, 400);
         }, 150);
       }, 700);
     }, 50);

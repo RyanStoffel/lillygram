@@ -8,7 +8,7 @@
 set -e
 
 cd "$(dirname "$0")"
-SRC=../ios/BetterInstagram/ContentFilter.swift
+SRC=../ios/Lillygram/ContentFilter.swift
 OUT=build
 mkdir -p "$OUT"
 

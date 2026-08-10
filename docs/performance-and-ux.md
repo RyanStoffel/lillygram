@@ -63,8 +63,10 @@ measurable standards and the implementation techniques to hit them. R4 is
   and home reload. `ResaveSplashView` uses the same identity with an "Updating
   your favorites…" status while re-harvest runs, so the swap never happens
   on-screen. `ContentView.activeSplash` picks between them:
-  launch before the feed has ever been ready, resave for any later gap (only
-  produced by `applyFavoritesSelection`).
+  launch before the feed has ever been ready, resave for any later gap. Pull to
+  refresh uses an explicit phase machine: `pullCommitted` preserves the current
+  page with only the native refresh spinner for 0.4 s; `rebuilding` then starts
+  the real re-harvest/load and shows the launch-style splash.
 
 ### Flash-free blocking (P3, P4)
 - **Document-start injection.** The userscript and its CSS load at
@@ -86,8 +88,10 @@ measurable standards and the implementation techniques to hit them. R4 is
 
 ### Native feel (P5, P7, P8)
 - **Real native tab bar** (`TabView`) rather than a web nav, so the bottom bar is
-  truly native; `contentInsetAdjustmentBehavior = .never` + `ignoresSafeArea`
-  for correct safe-area handling.
+  truly native. The webview ignores the bottom safe area and receives 100 points
+  of outer scroll clearance only while `biNav` says the native tab bar is
+  visible; hidden-bar routes (including DM threads) respect the safe area and
+  receive zero outer clearance.
 - **Gesture fidelity.** `allowsBackForwardNavigationGestures = true`; the DM
   reel lock disables scroll surgically (only the reel container) so the rest of
   the app keeps native scrolling.
@@ -109,9 +113,9 @@ measurable standards and the implementation techniques to hit them. R4 is
 
 1. **Native accessibility and motion:** explicit tab labels, meaningful loading
    and error semantics, real-Favorites disclosure, and Reduce Motion support.
-2. **Adaptive shell geometry:** replace unconditional bottom clearance with
-   measured clearance that follows native tab-bar visibility without reloading a
-   webview.
+2. **Adaptive shell geometry:** visibility-aware clearance is implemented;
+   replace the current 100-point visible-bar constant with measured native tab
+   bar geometry if device logs show it is inaccurate.
 3. **Measured launch polish:** add debug signposts and profile cold launch, warm
    tab switches, memory, and feed scrolling before changing preload behavior.
 4. **Visible degraded states:** surface persistent favorites-sync degradation

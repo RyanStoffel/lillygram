@@ -1,6 +1,6 @@
 # The Favorites-Only Home Feed
 
-This is the hardest, most fragile part of BetterInstagram and the subject of the
+This is the hardest, most fragile part of Lillygram and the subject of the
 current regression. Read this before touching anything that produces, orders, or
 splices favorites edges. It implements **R1**.
 

@@ -5,6 +5,189 @@ as issues are fixed or found.
 
 ---
 
+## 0. Device-polish observability and deterministic fixes (2026-07-27)
+
+**Requirement:** R4 (plus R1 marker integrity). **Status:** deterministic bugs fixed;
+selector/geometry/animation changes pending a fresh physical-device round.
+
+This pass follows the stale-device-build diagnosis in
+`research-2026-07-27-device-polish.md`. Build number is now **2** and startup
+prints `[BI-BUILD] device-polish-observability v2`; the next device round must
+confirm that exact console line before judging behavior.
+
+**Verified in code and fixed:**
+
+- Pull-to-refresh now has explicit `idle` → `pullCommitted` → `rebuilding`
+  phases. The committed phase keeps the current document uncovered and the
+  native refresh control active with no splash; only after 0.4 s does the
+  rebuild splash appear and the actual re-harvest/home load begin. Whether the
+  spinner is visually clear below Instagram's live header still needs device
+  confirmation.
+- `selfClassChurn()` no longer suppresses Instagram removing a `__bi_*` hide
+  marker. Marker removal is treated as real work and the owning article is
+  immediately re-filtered; the jsdom gate now covers this regression.
+- A successful harvest/density result destroys and detaches its offscreen
+  `WKWebView`, reducing the steady-state process from five Instagram documents
+  back to the four persistent tabs.
+- Native bottom geometry now follows each page's `biNav` state. A page only
+  receives the 100-point outer tab-bar clearance while its native tab bar is
+  visible, and SwiftUI respects the bottom safe area when the tab bar is hidden.
+  The DM inner-scroller padding remains as a reasserted fallback.
+- Home and DM title positioning invariants are reasserted on every applicable
+  pass. Direct resolves its profile identity before attempting the inbox title,
+  removing the first-pass ordering dependency.
+
+**Implemented conservatively; needs device confirmation:**
+
+- DM reel entry now marks a share-card activation before forwarding it, hides
+  the newly mounted viewer in the MutationObserver microtask, waits briefly for
+  stable fullscreen geometry (hard 400 ms reveal fallback), then reveals with a
+  centered scale/opacity transition. Reduce Motion bypasses it. The URL-less
+  card detector is a broad large-media-card heuristic, so the device round must
+  also confirm ordinary shared posts/photos are never gated as reels.
+- The geometric home-caret rule and heuristic DM message-scroller selection are
+  intentionally retained pending real DOM evidence. They now reassert their
+  styles and emit bounded captures rather than being broadened blindly.
+
+**Diagnostics added for the next round:** every native load/reload/recovery and
+navigation lifecycle event has an id/reason plus active tab, URL, loading state,
+and offset; userscript boots include document/frame ids and lifecycle/route
+logs; `apply()` reports named-stage errors and sampled timings; bounded
+`[header-scan]`, `[dm-header]`, `[dm-scroll]`, `[dm-pop]`, and `[feed-remount]`
+lines capture the remaining live selector/animation/refetch questions. These
+logs do not by themselves prove that random home refreshes, header/caret
+instability, DM bottom reachability, DM reel animation, DM inbox centering, or
+general slowness are resolved.
+
+---
+
+## 0a. First on-device polish pass (2026-07-26)
+
+**Requirement:** R4. **Status:** implemented, pending on-device verification.
+
+A real-device pass surfaced a cluster of jank/correctness issues. Note: the two
+commits that preceded this one (`ce2d8eb`, `1f5c977`) claimed to fix several of
+these (watchdog reloads, header stability, DM header/scroll, DM reel pop) but
+their actual diffs only touched an Xcode asset-catalog setting and the star
+button's icon/label — none of the described JS/Swift changes were ever made.
+This entry is the real implementation.
+
+**Header logo instability ("goes left" / caret flashes).** `fixHomeHeader()`
+gated both centering the logo box *and* hiding its caret sibling behind
+`logoBox.querySelectorAll('svg').length === 1`. Any transient extra svg in
+that box (a badge, a nested caret IG sometimes renders there instead of as a
+sibling) failed the count check and skipped the whole block for that pass —
+leaving the logo unstyled (visually "snapped left") and the caret unhidden
+until a later pass happened to see exactly one svg again. Fixed: centering and
+caret-hiding are now identity-based ("hide every svg in the box that isn't the
+known logo node") instead of count-gated, so a transient extra icon can never
+skip the fix.
+
+**DM header username not centered.** No DM-specific header handling existed.
+Added `fixDMHeader()` (thread route only): finds the header via the same
+bounding-rect walk `fixHomeHeader()` uses (from the "Back" icon instead of the
+logo), identifies the title control as the header's clickable child with real
+text that isn't the back button or an icon-only control, and absolutely
+centers it — the same technique as the logo, chosen because the header's own
+flex layout visibly favors whichever side (back vs. call/video/info icons) is
+narrower. Left tappable (unlike the decorative home logo) since it opens
+thread details.
+
+**DM thread can't scroll all the way down.** The message list scrolls inside
+its own inner container (fixed header + fixed composer around it), which the
+webview-level `contentInset.bottom` clearance (reserved for the floating
+native tab bar) never reaches — so the last message(s) could end up hidden
+behind the tab bar with nothing left to scroll. Added `fixDirectThreadScroll()`
+(thread route only): finds the tallest actually-overflowing `overflow-y:
+auto/scroll` container and gives it real bottom padding, once, idempotently.
+
+**DM reel opens by sliding in from the right.** A reel opened from a DM share
+card renders in Instagram's own overlay dialog, which its web client
+animates like a page navigation (slide from the right) rather than a native
+viewer. Added a one-shot `__bi_reel_pop` scale/opacity CSS animation, applied
+to that dialog the moment the DM-scoped reel lock engages (`updateScrollLock`
+→ `maybeAnimateReelEntry`), so it pops from center instead.
+
+**Home feed appears to "refresh itself" on leaving a story or comments.** Ruled
+out the JS feed watchdog as the cause: `armFeedWatchdog()` sets
+`window.__biWatchArmed` once per real page load and never rearms on SPA route
+changes (closing a story/comments doesn't reload the page), so it cannot be
+responsible for a *repeated*, every-time flash. The likely mechanism is
+Re-rendered/re-virtualized feed article nodes being briefly unfiltered after
+Instagram's own client remounts the feed route on return to `/`, until the
+next `apply()` pass re-hides them. Mitigated by making `onRouteChange()` run
+`apply()` immediately (via `requestAnimationFrame`, bypassing the normal
+throttle wait) specifically when the route lands back on `/`, shrinking that
+window as much as possible from our side. **Not fully diagnosed** — this may
+partly be Instagram's own web client re-fetching/remounting the feed on
+navigation back (arguably inherent, not introduced by the wrapper). Needs a
+follow-up device pass watching `[BI-DEBUG]`/`[feed]`/`[present]` logs timed
+around a story/comments close to confirm whether the perceived "refresh" is
+purely the DOM-filter flash (now shortened) or an actual navigation/reload.
+
+**Pull-to-refresh.** Added a `.medium` haptic the instant the pull commits
+(previously none), delayed showing the full-screen splash by 0.4s so the
+native `UIRefreshControl` spinner is visibly spinning under the header first
+(previously the splash could cover it almost immediately), and switched the
+spinner tint from a hardcoded white to `.secondaryLabel` for light-mode
+correctness. Also guarded `handlePullToRefresh()` against re-entry.
+
+**Still open / not addressed this pass:** general "feels slow" — `apply()` is
+already route-scoped (contrary to the handoff doc's claim it wasn't); a real
+fix needs on-device profiling (Instruments Time Profiler during feed scroll)
+to find the actual hot path rather than guessing.
+
+### Follow-up pass (same day, second device round)
+
+Device testing after the above showed three of the fixes didn't actually land
+and surfaced one new root cause:
+
+- **DM header fix targeted the wrong screen.** The report ("my name isn't
+  centered") was the **inbox** list header (own username + account-switcher
+  chevron, e.g. "r.stoffel.62 ⌄"), not the thread header `fixDMHeader()` was
+  scoped to (`/direct/t/`, gated on a "Back" icon that doesn't exist on the
+  inbox route) — so it never ran. Split into `fixDMThreadHeader()` (unchanged
+  logic) and `fixDMInboxHeader()` (new): the inbox title has no reliable
+  anchor icon, so it's found by matching text against the username already
+  resolved from the nav row (`window.__biLastProfileHref`, populated
+  independently per-webview since each tab is its own JS realm).
+- **Home logo caret reappears on scroll.** The previous fix hid caret svgs by
+  DOM relationship (nested in the logo's box, or its next sibling) — which
+  breaks the moment that relationship shifts, and a scroll-triggered
+  compact/sticky header variant does exactly that. Replaced with a geometric
+  check: after centering the logo box, hide anything small sitting near the
+  header's horizontal center, regardless of how it nests. Robust to *how* the
+  caret remounts, only cares *where* it visually sits.
+- **Cold-start "loads in, then flashes as it reloads" with IG's own nav
+  showing.** Root cause: `finishHarvest()`'s post-harvest `deliverFavEdges()`
+  can unblock the *pre-reload* page's held feed request immediately, which can
+  render real favorites and flip `favoritesFeedReady` true (dropping the
+  splash) a moment before the already-scheduled 0.3s-later reload fires — so
+  the user sees the splash drop, then Instagram's raw page (with its own
+  chrome, before our filters catch up) for the reload's duration, then
+  favorites again. This reload itself is not skippable on a true cold start
+  (see #1's root cause: the initial SSR-embedded HTML, not the XHR, is what
+  actually renders, and only a reload gets favorites into a fresh SSR embed).
+  Fixed by re-arming `favoritesFeedReady = false` at the moment the reload is
+  scheduled, so the splash stays up for the whole cycle and only the
+  *reloaded* page's own `biFavReady` drops it.
+- **DM reel still slides in from the right.** Broadened the overlay-container
+  search (role=dialog, then the scroll-lock container, then the nearest
+  fixed/absolute-positioned near-fullscreen ancestor) and switched from a CSS
+  class/keyframes animation to a JS-driven `!important` inline
+  transform/opacity transition, since `!important` inline outranks a CSS
+  transition class Instagram might be using. **Still unverified** — if
+  Instagram drives the slide by reassigning this same element's inline
+  `transform` every frame (a JS/Framer-Motion-style animation rather than a
+  CSS class), no inline-style trick on that element can win: assigning
+  `.style.transform = x` from JS clears any prior `!important` on that
+  property regardless of who set it. Added a `[dm] reel pop applied
+  role=...` log; if the slide persists, check whether that log fires at all
+  (wrong element found) versus fires but is visually overridden (wrong
+  animation mechanism, needs a live capture of what's actually driving it).
+
+---
+
 ## 1. Favorites feed regression — home feed spins / renders too few  ⚠️ TOP PRIORITY
 
 **Requirement:** R1. **Status:** RESOLVED (2026-07-14, confirmed on device — favorites render).
@@ -145,6 +328,90 @@ can only ever fire from the natural launch-time harvest, never those flows.
 actually fires (`[BI-harvest] disk preload matched live harvest; skipping
 post-harvest reload`) when favorites haven't changed, and that a changed
 favorites list / new posts still correctly falls back to the reload.
+
+**Follow-up (2026-07-27): the `7b4e3e1` re-arm fix genuinely landed (verified
+via `git show`) but does not stop the flash — it reproduces every cold launch.**
+Full diagnosis in `research-2026-07-27-coldstart-reload-flash.md`. Two real,
+stacked gaps, not one: (1, primary/structural) `biFavReady` — the only thing
+that sets `favoritesFeedReady = true` — fires the instant harvested data is
+spliced into a parsed response (`installSSRFeedSplice()`'s `JSON.parse` hook,
+or the XHR splice in `rewriteFeedText()`), with no check that the page has
+actually run its own DOM-filter pass yet; `ensureStyleInjected()` (the CSS hide
+injection) and `fixHomeHeader()` (logo centering, caret hiding, favorites star)
+only run inside `apply()`, which is on its own independent `requestAnimationFrame`/
+`document.body` timer (`start()`) with zero ordering relationship to `biFavReady`.
+(2, contributing) `finishHarvest()` calls `deliverFavEdges()` — which unblocks
+the still-visible pre-reload page's held feed request — one line **before**
+re-arming `favoritesFeedReady = false`, so that page can independently
+re-flip the flag (or run an uncovered `scheduleApply()`) in the gap before the
+fixed 300 ms reload timer fires.
+
+**Implemented (2026-07-27), both halves of the recommended fix.** (1)
+`ContentFilter.swift`: the three `biFavReady` call sites now call
+`markFavDataReady()` instead of posting directly; `biFavReady` only actually
+posts from `maybePostFavReady()` once **both** `window.__biFavDataReady` and a
+new `window.__biFirstApplyDone` (set in a `finally` block at the end of
+`apply()`, so it's true after the first pass regardless of whether a later
+stage threw) are true — so `favoritesFeedReady` can no longer flip true before
+this document's own `ensureStyleInjected()`/`fixHomeHeader()` pass has run. (2)
+`WebViewStore.swift`'s `finishHarvest()`: when a post-harvest reload is about
+to happen, `favoritesFeedReady = false` is now set **before** delivering
+edges, and `deliverFavEdges(includingHome:)` skips the home tab specifically
+in that branch (the about-to-be-discarded pre-reload page never gets a chance
+to react); the now-pointless fixed 0.3 s pre-reload delay was also removed
+since the splash's coverage no longer depends on it. `tools/check.sh` passes
+and a simulator build succeeds. **Needs on-device confirmation** that the
+flash is actually gone across a few real cold launches — static analysis and
+the jsdom harness can't observe the real HTML-streaming/paint timing this bug
+lives in. See `research-2026-07-27-coldstart-reload-flash.md` for the full
+diagnosis and line citations.
+
+**Hardened same day: bounded fallback on the apply()-gate.** A first on-device
+run after the above landed hit a **separate, pre-existing** failure — the
+harvest webview never reached `didFinish` across four straight generations (no
+`[BI-nav] ... event=didFinish reason=harvest-generation-N` and no
+`[BI-harvest] count=` in the console at all), so `finishHarvest()` was never
+even reached, and the disk-preloaded SSR splice also never matched
+(`[favsplice] spliced favorites into SSR feed data` never logged) — both
+mechanisms this fix doesn't touch. That run would have hung under the old code
+too (nothing ever made `biFavReady`'s underlying data-ready condition true),
+but it exposed a real gap in the new apply()-gate: if `apply()` ever stalls or
+throws for a reason unrelated to favorites, gating `biFavReady` on it with no
+escape hatch can turn a cosmetic flash into a permanent hang — worse than the
+bug it fixes. `markFavDataReady()` now arms a bounded 1.5 s fallback timer: if
+`apply()` hasn't completed by then, `biFavReady` posts anyway
+(`[favsplice] apply() did not complete within 1.5s of data-ready; posting
+biFavReady anyway`). Normal case is unaffected (apply()'s first pass typically
+completes well under 1.5 s of `document.body` existing). The harvest-webview-
+stuck-at-didCommit symptom itself is still open and unrelated — likely
+Instagram-side throttling from the watchdog's own rapid-fire retry loop (four
+full page loads of instagram.com in under 90 s); needs a longer device capture
+to confirm whether `didFinish` eventually fires late or never at all.
+
+**Second device round found a real, pre-existing infinite-loop bug, now
+fixed.** With the harvest no longer hanging, a fresh log showed the SSR splice
+succeeding at the data layer (`[favsplice] spliced favorites into SSR feed
+data`) but the DOM briefly still showing 0 visible favorites
+(`[feed] 2 articles, 2 hidden` — React hadn't yet hydrated the spliced data
+into the article nodes `filterArticle()` was evaluating). That's expected to
+self-correct via the MutationObserver within the watchdog's normal 9 s window
+— except the `biFavReady` handler (`WebViewStore.swift`, `userContentController
+didReceive`) was unconditionally resetting `feedRecoveryAttempts = 0` on
+**every** `biFavReady`, including ones that fire without the feed ever
+actually showing a favorite. That replenished `handleFeedStuck()`'s intended
+"one automatic recovery, then show the retry screen" budget on every single
+reload cycle, producing exactly what was reported: reload → `biFavReady`
+fires → budget resets → watchdog finds it still stuck 9 s later → auto-recover
+again → reload → repeat forever, splash re-showing each time, never reaching
+`FeedErrorView`. This predates today's flash fix (the reset line is untouched
+by it) — the flash fix likely only made it easier to notice by changing when
+`biFavReady` fires relative to the DOM hydration race. Fixed: the reset was
+removed from the `biFavReady` handler; the budget now only refills on an
+explicit new attempt (`applyFavoritesSelection()`, `retryFavoritesFeed()`, or
+an account switch via `resetAccountDerivedState()`), so a feed that's still
+stuck after one watchdog-triggered recovery now correctly reaches the retry
+screen instead of looping. `tools/check.sh` and a simulator build both pass.
+**Needs on-device confirmation**, along with the original flash fix.
 
 ---
 

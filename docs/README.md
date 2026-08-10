@@ -1,6 +1,6 @@
-# BetterInstagram — Documentation
+# Lillygram — Documentation
 
-This `docs/` folder is the **source of truth** for what BetterInstagram is, why
+This `docs/` folder is the **source of truth** for what Lillygram is, why
 it exists, and how it is built.
 
 > It supersedes `ios/README.md` and `ios/project.yml`, both of which are
@@ -8,7 +8,7 @@ it exists, and how it is built.
 > target. The real code uses a hidden-harvest + XHR edge-splice, and the
 > hand-edited `pbxproj` targets iOS 26.
 
-## What BetterInstagram is
+## What Lillygram is
 
 A SwiftUI iOS app that wraps the real `instagram.com` mobile site in persistent
 `WKWebView`s using the user's own Instagram login, then injects userscript-style

@@ -15,6 +15,9 @@ enum ContentFilter {
       const preRouteViewerGeometry = new WeakMap();
       let activeStorySurface = null;
       let activeReelSurface = null;
+      window.__biVersion = 'device-polish-v2';
+      const documentID = Math.round((window.performance && window.performance.timeOrigin) || Date.now()) + '-' +
+        Math.random().toString(36).slice(2, 8);
 
       const style = document.createElement('style');
       style.id = '__bi_filter_style';
@@ -36,20 +39,70 @@ enum ContentFilter {
         .__bi_lockedscroll { overflow: hidden !important; touch-action: none !important; overscroll-behavior: none !important; }
         html.__bi_noscroll, html.__bi_noscroll body { overflow: hidden !important; height: 100% !important; touch-action: none !important; }
         html.__bi_noscroll * { touch-action: none !important; }
-        html.__bi_noscroll [role="dialog"]:not(:has(video)), html.__bi_noscroll [role="dialog"]:not(:has(video)) * { touch-action: auto !important; }
+        html.__bi_noscroll [role="dialog"]:not(:has(video)) { touch-action: pan-y !important; -webkit-overflow-scrolling: touch; }
+        html.__bi_noscroll [role="dialog"]:not(:has(video)) * { touch-action: auto !important; }
         a, [role="button"], [role="link"] { cursor: pointer; }
         a, button, [role="button"], [role="link"], input, select, textarea { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
         #__bi_star_btn { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); z-index: 3; background: none; border: 0; padding: 8px; display: flex; align-items: center; }
         @keyframes __bi_rot { to { transform: rotate(360deg); } }
       `;
 
-      function biLog(msg) {
-        if (!isTopFrame) return;
+      function postLog(msg) {
         try {
           if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.biLog) {
             window.webkit.messageHandlers.biLog.postMessage(String(msg));
           }
         } catch (e) {}
+      }
+
+      function biLog(msg) {
+        if (!isTopFrame) return;
+        postLog(msg);
+      }
+
+      // biFavReady tells native it's safe to drop the launch/resave splash.
+      // Posting it as soon as favorites DATA has been spliced into a parsed
+      // response (window.__biFavDataReady) is not enough on its own — that
+      // only proves Relay/React WILL render favorites once it runs, not that
+      // THIS document has actually styled itself yet: the hide-CSS
+      // (ensureStyleInjected) and the header restyle (fixHomeHeader) only run
+      // inside apply(), on document.body's own independent timer (see
+      // start() below), with no ordering relationship to when the streamed
+      // feed data happens to parse. Gating on window.__biFirstApplyDone too
+      // (set at the end of apply()) means the splash can only drop once this
+      // document has actually run its own DOM-filter pass — closing the
+      // "reload flashes Instagram's raw nav" gap. See
+      // docs/research-2026-07-27-coldstart-reload-flash.md.
+      window.__biFavDataReady = false;
+      window.__biFirstApplyDone = false;
+
+      function maybePostFavReady() {
+        if (!isTopFrame || window.__biFavReadyPosted) return;
+        if (!window.__biFavDataReady || !window.__biFirstApplyDone) return;
+        window.__biFavReadyPosted = true;
+        try { webkit.messageHandlers.biFavReady.postMessage(true); } catch (e) {}
+      }
+
+      function markFavDataReady() {
+        window.__biFavDataReady = true;
+        maybePostFavReady();
+        // Bounded safety net: apply()'s first pass normally follows within a
+        // fraction of a second of document.body existing (see start()), so
+        // this should never actually fire. But apply() stalling or throwing
+        // for a reason unrelated to favorites (a DOM-filter bug, a slow
+        // device) must never be able to permanently withhold biFavReady once
+        // the data itself is genuinely ready — that would trade the cold-start
+        // flash for an occasional hard hang, which is worse. If apply() still
+        // hasn't completed 1.5s after data became ready, post anyway.
+        if (!window.__biFavReadyPosted) {
+          setTimeout(function() {
+            if (window.__biFavDataReady && !window.__biFirstApplyDone) {
+              biLog('[favsplice] apply() did not complete within 1.5s of data-ready; posting biFavReady anyway');
+              window.__biFirstApplyDone = true;
+            }
+            maybePostFavReady();
+          }, 1500);
+        }
       }
 
       function ensureStyleInjected() {
@@ -68,7 +121,34 @@ enum ContentFilter {
         return document.querySelector('main') || document.body || document;
       }
 
+      const diagnosticNodeIDs = new WeakMap();
+      let diagnosticNodeSequence = 0;
+      function diagnosticNodeID(node) {
+        if (!node) return 0;
+        if (!diagnosticNodeIDs.has(node)) diagnosticNodeIDs.set(node, ++diagnosticNodeSequence);
+        return diagnosticNodeIDs.get(node);
+      }
+
+      function shortAncestry(node, limit) {
+        const values = [];
+        for (let depth = 0; node && node !== document.body && depth < (limit || 4); depth++) {
+          values.push(node.tagName + '#' + diagnosticNodeID(node) +
+            (node.getAttribute && node.getAttribute('role') ? '[role=' + node.getAttribute('role') + ']' : ''));
+          node = node.parentElement;
+        }
+        return values.join('>');
+      }
+
       // ---- route helpers -------------------------------------------------
+
+      function diagnosticPath(path) {
+        path = String(path || '/');
+        if (/^\\/direct\\/t\\//.test(path)) return '/direct/t/<id>/';
+        if (/^\\/stories\\//.test(path)) return '/stories/<id>/';
+        if (/^\\/(reels?|p|tv)\\//.test(path)) return '/' + path.split('/')[1] + '/<id>/';
+        if (/^\\/[A-Za-z0-9._]+\\/?$/.test(path) && path !== '/') return '/<profile>/';
+        return path;
+      }
 
       function isReelSectionPage() {
         return /^\\/reels\\/(audio|videos)\\//.test(location.pathname);
@@ -558,10 +638,7 @@ enum ContentFilter {
               if (did && !window.__biSSRSpliced) {
                 window.__biSSRSpliced = true;
                 biLog('[favsplice] spliced favorites into SSR feed data');
-                if (isTopFrame && !window.__biFavReadyPosted) {
-                  window.__biFavReadyPosted = true;
-                  try { webkit.messageHandlers.biFavReady.postMessage(true); } catch (e) {}
-                }
+                markFavDataReady();
               }
             }
           } catch (e) {}
@@ -577,6 +654,10 @@ enum ContentFilter {
         window.fetch = function(input) {
           let url = '';
           try { url = (typeof input === 'string') ? input : ((input && input.url) || ''); } catch (e) {}
+          try {
+            const init = arguments[1];
+            logFeedRequest(url, init && init.body);
+          } catch (e) {}
           const result = origFetch.apply(this, arguments);
           if (!/\\/graphql|\\/api\\/v1\\/feed\\/|\\/api\\/v1\\/web\\/search\\/|\\/api\\/v1\\/fbsearch\\//.test(url)) return result;
           return result.then(function(response) {
@@ -649,10 +730,7 @@ enum ContentFilter {
           biLog('[search] filtered search results to accounts-only (xhr)');
         }
         if (isFeedLike && window.__biNativeFavMode) {
-          if (location.pathname === '/' && !window.__biFavReadyPosted) {
-            window.__biFavReadyPosted = true;
-            try { webkit.messageHandlers.biFavReady.postMessage(true); } catch (e) {}
-          }
+          if (location.pathname === '/') markFavDataReady();
         }
         // In native-favorites mode IG serves the favorites feed itself; never
         // rewrite a feed response there or Relay throws and the feed spins
@@ -664,11 +742,10 @@ enum ContentFilter {
             if (feedChanged) {
               changed = true;
               biLog('[favsplice] swapped favorites into home response');
-              // Tell native the favorites feed is ready so it can drop the splash.
-              if (location.pathname === '/' && !window.__biFavReadyPosted) {
-                window.__biFavReadyPosted = true;
-                try { webkit.messageHandlers.biFavReady.postMessage(true); } catch (e) {}
-              }
+              // Tell native the favorites feed is ready (once this document
+              // has also styled itself — see markFavDataReady) so it can drop
+              // the splash.
+              if (location.pathname === '/') markFavDataReady();
             } else {
               if (before && before.length) feedRenderedAlgorithmic = true;
               biLog('[favsplice] NO SWAP (favEdges=' + (favEdges ? favEdges.length : 0) +
@@ -1048,11 +1125,58 @@ enum ContentFilter {
         return 'allow';
       }
 
+      let feedDiagnostic = null;
+      function articleDiagnosticID(article) {
+        if (!article || !article.querySelector) return '?';
+        const media = article.querySelector('a[href^="/p/"], a[href^="/reel/"], a[href^="/reels/"]');
+        return (media && diagnosticPath(media.getAttribute('href'))) || ('node:' + diagnosticNodeID(article));
+      }
+
+      function beginFeedDiagnostic(reason) {
+        if (!isTopFrame || location.pathname !== '/') return;
+        if (feedDiagnostic && feedDiagnostic.timer) clearTimeout(feedDiagnostic.timer);
+        feedDiagnostic = { reason: reason, added: 0, removed: 0, reused: 0, markerRemoved: 0, ids: [], timer: null };
+        feedDiagnostic.timer = setTimeout(function() {
+          if (!feedDiagnostic) return;
+          const value = feedDiagnostic;
+          feedDiagnostic = null;
+          biLog('[feed-remount] reason=' + value.reason + ' added=' + value.added +
+            ' removed=' + value.removed + ' reused=' + value.reused +
+            ' markerRemoved=' + value.markerRemoved + ' ids=' + JSON.stringify(value.ids.slice(0, 8)));
+        }, 1800);
+      }
+
+      function noteFeedArticles(nodes, kind) {
+        if (!feedDiagnostic || !nodes) return;
+        for (let i = 0; i < nodes.length; i++) {
+          const node = nodes[i];
+          if (!node || node.nodeType !== 1) continue;
+          const articles = [];
+          if (node.tagName === 'ARTICLE') articles.push(node);
+          if (node.querySelectorAll) node.querySelectorAll('article').forEach(function(article) { articles.push(article); });
+          feedDiagnostic[kind] += articles.length;
+          articles.forEach(function(article) {
+            if (feedDiagnostic.ids.length < 8) feedDiagnostic.ids.push(kind + ':' + articleDiagnosticID(article));
+          });
+        }
+      }
+
+      let lastRoutePath = location.pathname;
       function onRouteChange() {
+        const oldPath = lastRoutePath;
+        const newPath = location.pathname;
+        lastRoutePath = newPath;
+        if (oldPath !== newPath) biLog('[route] ' + diagnosticPath(oldPath) + ' -> ' +
+          diagnosticPath(newPath) + ' doc=' + documentID);
         updateScrollLock();
         reportNavVisibility();
         reportBackgroundColor();
-        scheduleApply();
+        if (newPath === '/') {
+          beginFeedDiagnostic('route-return:' + oldPath);
+          requestAnimationFrame(apply);
+        } else {
+          scheduleApply();
+        }
       }
 
       function installHistoryHook() {
@@ -1106,6 +1230,180 @@ enum ContentFilter {
         });
       }
 
+      // A reel opened from a DM share card is presented in an overlay that
+      // Instagram slides in from the right. The trusted activation records a
+      // pending token before Instagram handles it; the observer then hides the
+      // mounted surface before paint, waits out the slide, and reveals our pop.
+      // The overlay is not always [role="dialog"], so retain the near-fullscreen
+      // fixed/absolute and scroll-container fallbacks.
+      function reelOverlayContainer(video) {
+        const byRole = video.closest('[role="dialog"]');
+        if (byRole) return byRole;
+        const byScroll = scrollLockContainer(video);
+        if (byScroll) return byScroll;
+        let node = video.parentElement;
+        let depth = 0;
+        while (node && node !== document.body && depth < 10) {
+          const cs = getComputedStyle(node);
+          if ((cs.position === 'fixed' || cs.position === 'absolute')) {
+            const r = node.getBoundingClientRect();
+            if (r.width >= window.innerWidth * 0.9 && r.height >= window.innerHeight * 0.6) return node;
+          }
+          node = node.parentElement;
+          depth++;
+        }
+        return null;
+      }
+
+      function reduceMotionRequested() {
+        return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+      }
+
+      let dmReelPending = null;
+      try {
+        const storedPending = Number(sessionStorage.getItem('__biDMReelPendingUntil') || 0);
+        if (!reduceMotionRequested() && storedPending > Date.now()) {
+          dmReelPending = { until: storedPending, source: 'previous-document' };
+        } else {
+          sessionStorage.removeItem('__biDMReelPendingUntil');
+        }
+      } catch (e) {}
+
+      function markDMReelPending(source) {
+        if (reduceMotionRequested()) return;
+        const until = Date.now() + 900;
+        dmReelPending = { until: until, source: source };
+        try { sessionStorage.setItem('__biDMReelPendingUntil', String(until)); } catch (e) {}
+        biLog('[dm-pop] pending source=' + source + ' path=' + diagnosticPath(location.pathname));
+      }
+
+      function dmReelPendingActive() {
+        if (reduceMotionRequested() || !dmReelPending || dmReelPending.until <= Date.now()) {
+          dmReelPending = null;
+          try { sessionStorage.removeItem('__biDMReelPendingUntil'); } catch (e) {}
+          return false;
+        }
+        return true;
+      }
+
+      function dmPopAncestorCapture(surface, video) {
+        const values = [];
+        let node = video || surface;
+        for (let depth = 0; node && node !== document.body && depth < 8; depth++) {
+          const cs = getComputedStyle(node);
+          const r = node.getBoundingClientRect();
+          let animations = [];
+          try {
+            if (node.getAnimations) animations = node.getAnimations({ subtree: false }).map(function(animation) {
+              return animation.animationName || animation.playState || 'animation';
+            }).slice(0, 4);
+          } catch (e) {}
+          values.push({ tag: node.tagName, role: node.getAttribute && (node.getAttribute('role') || ''),
+            rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
+            inlineTransform: node.style && node.style.transform || '', transform: cs.transform,
+            transition: cs.transition, animation: cs.animationName, animations: animations });
+          node = node.parentElement;
+        }
+        return values;
+      }
+
+      function revealDMReelSurface(surface, reason) {
+        if (!surface || surface.dataset.biPopRevealed === '1') return;
+        surface.dataset.biPopRevealed = '1';
+        biLog('[dm-pop] reveal reason=' + reason + ' role=' +
+          (surface.getAttribute('role') || surface.tagName));
+        try {
+          surface.style.setProperty('visibility', 'visible', 'important');
+          surface.style.setProperty('transition', 'none', 'important');
+          surface.style.setProperty('transform', 'scale(0.88)', 'important');
+          surface.style.setProperty('opacity', '0', 'important');
+        } catch (e) {}
+        requestAnimationFrame(function() {
+          try {
+            surface.style.setProperty(
+              'transition',
+              'transform 0.22s cubic-bezier(0.2,0.8,0.2,1), opacity 0.22s ease-out',
+              'important'
+            );
+            surface.style.setProperty('transform', 'scale(1)', 'important');
+            surface.style.setProperty('opacity', '1', 'important');
+          } catch (e) {}
+          setTimeout(function() {
+            try {
+              surface.style.removeProperty('visibility');
+              surface.style.removeProperty('transition');
+              surface.style.removeProperty('transform');
+              surface.style.removeProperty('opacity');
+            } catch (e) {}
+          }, 260);
+        });
+      }
+
+      function gateDMReelSurface(surface, video) {
+        if (!surface || surface.dataset.biPopGated === '1' || !dmReelPendingActive()) return;
+        surface.dataset.biPopGated = '1';
+        surface.dataset.biPopped = '1';
+        try {
+          surface.style.setProperty('visibility', 'hidden', 'important');
+          surface.style.setProperty('opacity', '0', 'important');
+        } catch (e) {}
+        let capture = [];
+        try { capture = dmPopAncestorCapture(surface, video); } catch (e) {
+          capture = [{ error: String(e) }];
+        }
+        biLog('[dm-pop] ancestors=' + JSON.stringify(capture));
+        biLog('[dm] reel pop applied role=' + (surface.getAttribute('role') || surface.tagName));
+        dmReelPending = null;
+        try { sessionStorage.removeItem('__biDMReelPendingUntil'); } catch (e) {}
+        const started = Date.now();
+        let stableFrames = 0;
+        let lastGeometry = '';
+        let finished = false;
+        function reveal(reason) {
+          if (finished) return;
+          finished = true;
+          revealDMReelSurface(surface, reason);
+        }
+        function waitForRest() {
+          if (finished || !surface.isConnected) { reveal('detached'); return; }
+          const currentVideo = video && video.isConnected ? video : surface.querySelector('video');
+          const r = surface.getBoundingClientRect();
+          const cs = getComputedStyle(surface);
+          const geometry = [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height),
+            cs.transform, cs.transition].join('|');
+          stableFrames = geometry === lastGeometry ? stableFrames + 1 : 0;
+          lastGeometry = geometry;
+          const fullEnough = !!currentVideo && r.width >= window.innerWidth * 0.8 &&
+            r.height >= window.innerHeight * 0.55;
+          if (fullEnough && stableFrames >= 2) { reveal('settled'); return; }
+          if (Date.now() - started >= 340) { reveal('timeout'); return; }
+          requestAnimationFrame(waitForRest);
+        }
+        requestAnimationFrame(waitForRest);
+        setTimeout(function() { reveal('hard-timeout'); }, 400);
+      }
+
+      function gatePendingDMReel(root) {
+        if (!dmReelPendingActive() || !root || root.nodeType !== 1) return;
+        let video = root.matches && root.matches('video') ? root :
+          (root.querySelector ? root.querySelector('video') : null);
+        let surface = null;
+        if (video) surface = reelOverlayContainer(video) || video;
+        if (!surface && root.matches && root.matches('[role="dialog"]')) surface = root;
+        if (!surface && root.getBoundingClientRect) {
+          const cs = getComputedStyle(root);
+          const r = root.getBoundingClientRect();
+          if ((cs.position === 'fixed' || cs.position === 'absolute') &&
+              r.width >= window.innerWidth * 0.8 && r.height >= window.innerHeight * 0.55) surface = root;
+        }
+        if (surface) gateDMReelSurface(surface, video);
+      }
+
+      function maybeAnimateReelEntry(video) {
+        if (!video || !dmReelPendingActive()) return;
+        gateDMReelSurface(reelOverlayContainer(video) || video, video);
+      }
+
       function updateScrollLock() {
         const lock = shouldLockScroll();
         const immersive = isImmersiveSurface(lock);
@@ -1119,6 +1417,7 @@ enum ContentFilter {
           if (container && !container.classList.contains('__bi_lockedscroll')) {
             container.classList.add('__bi_lockedscroll');
           }
+          maybeAnimateReelEntry(video);
         } else {
           document.querySelectorAll('.__bi_lockedscroll').forEach(function(el) {
             el.classList.remove('__bi_lockedscroll');
@@ -1298,6 +1597,7 @@ enum ContentFilter {
           const url = reelURLNearDMTarget(tap.target, point.clientX, point.clientY);
           if (!url) {
             if (isDMShareCardTap(tap.target)) {
+              markDMReelPending('url-less-touch');
               const path = location.pathname;
               setTimeout(function() {
                 if (location.pathname !== path || shouldLockScroll()) return;
@@ -1315,6 +1615,7 @@ enum ContentFilter {
             }
             return;
           }
+          markDMReelPending('permalink-touch');
           e.preventDefault();
           e.stopImmediatePropagation();
           biLog('[dm] routing first touch to ' + url.href);
@@ -1325,6 +1626,7 @@ enum ContentFilter {
           if (!e.isTrusted || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
           const url = reelURLNearDMTarget(e.target, e.clientX, e.clientY);
           if (!url) return;
+          markDMReelPending('permalink-click');
           e.preventDefault();
           e.stopImmediatePropagation();
           biLog('[dm] routing first click to ' + url.href);
@@ -1601,6 +1903,190 @@ enum ContentFilter {
         });
       }
 
+      // DM headers: Instagram lays a leading control (back button on a
+      // thread; nothing on the inbox) and a trailing icon cluster (call/
+      // video/info on a thread; the compose/edit icon on the inbox) out with
+      // flex space-between, so an unequal-width side visibly drags the
+      // title off center. Absolutely center the title instead of fighting
+      // the flex math (same technique as the home logo below). One shared
+      // helper does the actual centering once a title element is found.
+      function centerDMHeaderTitle(title) {
+        if (!title) return;
+        let header = title.parentElement;
+        let depth = 0;
+        while (header && header !== document.body && depth < 10) {
+          const r = header.getBoundingClientRect();
+          if (r.width >= window.innerWidth * 0.9 && r.height > 0 && r.height < 120) break;
+          header = header.parentElement;
+          depth++;
+        }
+        if (!header || header === document.body) return;
+        if (getComputedStyle(header).position === 'static') header.style.position = 'relative';
+        title.dataset.biDmCentered = '1';
+        title.style.position = 'absolute';
+        title.style.left = '50%';
+        title.style.top = '50%';
+        title.style.transform = 'translate(-50%, -50%)';
+        title.style.zIndex = '2';
+        title.style.pointerEvents = 'auto';
+        title.style.maxWidth = '55%';
+        title.style.textAlign = 'center';
+      }
+
+      // Thread route (/direct/t/<id>/): the name/avatar control is the
+      // header's own clickable child with real text that isn't the back
+      // button and isn't an icon-only control (call/video/info have an svg
+      // and no text). Left tappable — unlike the decorative home logo, this
+      // opens thread details.
+      function fixDMThreadHeader() {
+        const back = document.querySelector('svg[aria-label="Back"]');
+        if (!back) return;
+        const header = back.closest('header') || (function() {
+          let node = back.parentElement, depth = 0;
+          while (node && node !== document.body && depth < 12) {
+            const r = node.getBoundingClientRect();
+            if (r.width >= window.innerWidth * 0.9 && r.height > 0 && r.height < 120 &&
+                !node.querySelector('article')) return node;
+            node = node.parentElement;
+            depth++;
+          }
+          return null;
+        })();
+        if (!header) return;
+        const backControl = clickableFor(back) || back.parentElement;
+        let title = null;
+        const controls = header.querySelectorAll(':scope > *, :scope > * > *');
+        for (let i = 0; i < controls.length; i++) {
+          const el = controls[i];
+          if (el === backControl || (backControl && backControl.contains(el))) continue;
+          if (el.contains(back)) continue;
+          const text = (el.textContent || '').trim();
+          if (!text) continue;
+          if (el.querySelectorAll('svg').length > 1) continue;
+          if (!title || text.length > (title.textContent || '').trim().length) title = el;
+        }
+        centerDMHeaderTitle(title);
+      }
+
+      // Inbox route (/direct/ or /direct/inbox/): the title is the signed-in
+      // username (Instagram's own account-switcher control, no href). There is
+      // no reliable anchor icon here (no back button), so find it by matching
+      // text against the username we already resolved from the nav row
+      // (window.__biLastProfileHref, set independently per-webview by
+      // reportProfile() — each tab has its own JS realm). Cached after the
+      // first hit so this doesn't re-scan the document every apply() pass.
+      let dmInboxTitleEl = null;
+      function logDMHeaderScan(username, selected) {
+        if ((window.__biDMHeaderScanCount || 0) >= 5) return;
+        const candidates = [];
+        document.querySelectorAll('span, div, button, a').forEach(function(el) {
+          if (candidates.length >= 8) return;
+          const text = (el.textContent || '').trim().replace(/\\s+/g, ' ');
+          if (!text || text.length > 60) return;
+          const r = el.getBoundingClientRect();
+          if (r.top < 0 || r.top > 110 || r.width <= 0 || r.height <= 0) return;
+          candidates.push({ tag: el.tagName, role: el.getAttribute('role') || '',
+            textLength: text.length, ownUsernameMatch: !!username && text.toLowerCase() === username,
+            rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
+            ancestry: shortAncestry(el, 4) });
+        });
+        const signature = username + '|' + JSON.stringify(candidates) + '|' + !!selected;
+        if (window.__biLastDMHeaderScan === signature) return;
+        window.__biLastDMHeaderScan = signature;
+        window.__biDMHeaderScanCount = (window.__biDMHeaderScanCount || 0) + 1;
+        biLog('[dm-header] profileHref=' + (window.__biLastProfileHref || '') + ' route=' + location.pathname +
+          ' selected=' + !!selected + ' candidates=' + JSON.stringify(candidates));
+      }
+
+      function fixDMInboxHeader() {
+        const username = (window.__biLastProfileHref || '').replace(/\\//g, '').toLowerCase();
+        if (dmInboxTitleEl && dmInboxTitleEl.isConnected) {
+          centerDMHeaderTitle(dmInboxTitleEl);
+          logDMHeaderScan(username, dmInboxTitleEl);
+          return;
+        }
+        if (!username) { logDMHeaderScan('', null); return; }
+        let title = null;
+        const candidates = document.querySelectorAll('span, div, button, a');
+        for (let i = 0; i < candidates.length; i++) {
+          const el = candidates[i];
+          if (el.children.length > 0) continue;
+          if ((el.textContent || '').trim().toLowerCase() !== username) continue;
+          const r = el.getBoundingClientRect();
+          if (r.top < 0 || r.top > 100) continue;
+          title = clickableFor(el) || el;
+          break;
+        }
+        if (!title) { logDMHeaderScan(username, null); return; }
+        dmInboxTitleEl = title;
+        centerDMHeaderTitle(title);
+        logDMHeaderScan(username, title);
+        if (!window.__biDMHeaderFixLogged) {
+          window.__biDMHeaderFixLogged = true;
+          biLog('[header] dm inbox title centered');
+        }
+      }
+
+      function fixDMHeader() {
+        if (!isTopFrame) return;
+        if (/^\\/direct\\/t\\//.test(location.pathname)) { fixDMThreadHeader(); return; }
+        if (/^\\/direct\\/(inbox\\/?)?$/.test(location.pathname)) { fixDMInboxHeader(); }
+      }
+
+      // DM threads use an inner scroller around a fixed composer. Keep the
+      // existing conservative padding backstop, but reassert it after React
+      // restyles the node and capture enough geometry to identify the actual
+      // scroller on-device.
+      let dmScrollFixContainer = null;
+      function fixDirectThreadScroll() {
+        if (!isTopFrame || !/^\\/direct\\/t\\//.test(location.pathname)) return;
+        const cachedContainer = dmScrollFixContainer && dmScrollFixContainer.isConnected ? dmScrollFixContainer : null;
+        let container = cachedContainer;
+        let maxOverflow = 0;
+        const plausible = [];
+        const captureScrollGeometry = (window.__biDMScrollScanCount || 0) < 6;
+        scanRoot().querySelectorAll('div').forEach(function(node) {
+          if (node.clientHeight < 120) return;
+          const cs = getComputedStyle(node);
+          if (cs.overflowY !== 'auto' && cs.overflowY !== 'scroll') return;
+          const overflow = node.scrollHeight - node.clientHeight;
+          if (captureScrollGeometry && plausible.length < 8) {
+            const r = node.getBoundingClientRect();
+            plausible.push({ tag: node.tagName, overflow: cs.overflowY,
+              rect: [Math.round(r.top), Math.round(r.bottom), Math.round(r.height)],
+              top: Math.round(node.scrollTop), client: node.clientHeight, scroll: node.scrollHeight, max: overflow,
+              ancestry: shortAncestry(node, 4) });
+          }
+          if (!cachedContainer && overflow > maxOverflow) { maxOverflow = overflow; container = node; }
+        });
+        if (!container) return;
+        dmScrollFixContainer = container;
+        container.style.paddingBottom = '28px';
+        container.style.scrollPaddingBottom = '28px';
+        container.style.overscrollBehaviorY = 'contain';
+        if (!window.__biDMScrollFixLogged) {
+          window.__biDMScrollFixLogged = true;
+          biLog('[dm] extended thread scroll container');
+        }
+        if (!captureScrollGeometry) return;
+        const composerControl = document.querySelector('textarea, input[placeholder], [contenteditable="true"]');
+        const composer = composerControl && (clickableFor(composerControl) || composerControl.parentElement);
+        const composerRect = composer ? composer.getBoundingClientRect() : null;
+        const last = container.lastElementChild;
+        const lastRect = last ? last.getBoundingClientRect() : null;
+        const signature = Math.round(container.scrollTop / 50) + '|' + Math.round((container.scrollHeight - container.clientHeight) / 50) +
+          '|' + (composerRect ? Math.round(composerRect.top) : '?') + '|' + (lastRect ? Math.round(lastRect.bottom) : '?');
+        if (window.__biLastDMScrollScan !== signature && (window.__biDMScrollScanCount || 0) < 6) {
+          window.__biLastDMScrollScan = signature;
+          window.__biDMScrollScanCount = (window.__biDMScrollScanCount || 0) + 1;
+          biLog('[dm-scroll] chosen=' + shortAncestry(container, 6) + ' top=' + Math.round(container.scrollTop) +
+            ' max=' + Math.round(container.scrollHeight - container.clientHeight) +
+            ' lastBottom=' + (lastRect ? Math.round(lastRect.bottom) : '?') +
+            ' composerTop=' + (composerRect ? Math.round(composerRect.top) : '?') +
+            ' viewport=' + window.innerHeight + ' ancestors=' + JSON.stringify(plausible));
+        }
+      }
+
       // Home header: center the Instagram logo and add a favorites star on
       // the left (plus/heart stay on the right where IG puts them). The star
       // opens the native favorites editor via the biFavEdit message.
@@ -1622,29 +2108,55 @@ enum ContentFilter {
         if (getComputedStyle(header).position === 'static') header.style.position = 'relative';
 
         // The logo lives inside a small clickable control. IG sometimes renders
-        // a feed-switcher CARET as a SEPARATE svg sibling next to the logo's box
-        // (NOT inside it). Hide only that caret, then center the logo box exactly
-        // as before (guarded so a shared icon row is never dragged along).
+        // a feed-switcher CARET either as a separate svg sibling next to the
+        // logo's box, or nested inside the same box alongside the logo, and can
+        // remount either one on scroll (a compact/sticky header variant) — all
+        // observed live. A DOM-relationship heuristic ("the box's next sibling",
+        // "svgs nested in the same box") breaks the instant that relationship
+        // shifts, which is exactly what scrolling seems to trigger. Centering by
+        // identity + hiding by GEOMETRY (anything small sitting near the header's
+        // horizontal center, once the logo box is pinned there) is robust to
+        // that: it doesn't matter how the caret nests or which pass remounted
+        // it, only where it visually sits relative to the now-centered logo.
         const logoBox = logo.closest('a, [role="link"], [role="button"], button') || logo.parentElement;
-        if (logoBox.querySelectorAll('svg').length === 1 && !logoBox.querySelector('article')) {
-          if (logoBox.style.position !== 'absolute') {
-            logoBox.style.position = 'absolute';
-            logoBox.style.left = '50%';
-            logoBox.style.top = '50%';
-            logoBox.style.transform = 'translate(-50%, -50%)';
-            logoBox.style.zIndex = '2';
-          }
+        if (!logoBox.querySelector('article')) {
+          logoBox.style.position = 'absolute';
+          logoBox.style.left = '50%';
+          logoBox.style.top = '50%';
+          logoBox.style.transform = 'translate(-50%, -50%)';
+          logoBox.style.zIndex = '2';
           // The header logo is decorative here — clicking it must do nothing
           // (no feed switcher, no scroll-to-top), so make it inert.
-          if (logoBox.style.pointerEvents !== 'none') {
-            logoBox.style.pointerEvents = 'none';
-          }
-          // Caret sibling: a tiny (<44px) box right after the centered logo box.
-          const sib = logoBox.nextElementSibling;
-          if (sib && sib.querySelector && sib.querySelector('svg') &&
-              !sib.querySelector('article') &&
-              sib.getBoundingClientRect().width < 44) {
-            sib.style.display = 'none';
+          logoBox.style.pointerEvents = 'none';
+          // Forces a synchronous layout so the rect below reflects the
+          // positioning just applied above, not last frame's stale layout.
+          const headerRect = header.getBoundingClientRect();
+          const centerX = headerRect.left + headerRect.width / 2;
+          const nearby = [];
+          header.querySelectorAll('svg').forEach(function(svg) {
+            if (svg === logo || svg.id === '__bi_star_btn') return;
+            if (svg.closest('#__bi_star_btn, article')) return;
+            const r = svg.getBoundingClientRect();
+            if (r.width === 0 || r.width >= 44) return;
+            const cx = r.left + r.width / 2;
+            if (Math.abs(cx - centerX) < 60) {
+              nearby.push({ tag: svg.tagName, aria: svg.getAttribute('aria-label') || '',
+                rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] });
+              svg.style.display = 'none';
+            }
+          });
+          if ((window.__biHeaderScanCount || 0) < 6) {
+            const logoRect = logoBox.getBoundingClientRect();
+            const scan = 'header=' + shortAncestry(header, 3) + '.' + String(header.className || '').slice(0, 80) +
+              ' logo=' + shortAncestry(logoBox, 3) + '.' + String(logoBox.className || '').slice(0, 80) +
+              ' logoRect=' + JSON.stringify([Math.round(logoRect.left), Math.round(logoRect.top),
+                Math.round(logoRect.width), Math.round(logoRect.height)]) + ' nearby=' + JSON.stringify(nearby) +
+              ' scroll=' + Math.round(window.scrollY);
+            if (window.__biLastHeaderScan !== scan) {
+              window.__biLastHeaderScan = scan;
+              window.__biHeaderScanCount = (window.__biHeaderScanCount || 0) + 1;
+              biLog('[header-scan] variant=' + (header.getAttribute('role') || header.tagName) + ' ' + scan);
+            }
           }
         }
 
@@ -1652,10 +2164,18 @@ enum ContentFilter {
           const starButton = document.createElement('button');
           starButton.id = '__bi_star_btn';
           starButton.setAttribute('type', 'button');
-          starButton.setAttribute('aria-label', 'Favorites');
+          starButton.setAttribute('aria-label', 'Lillygram Controls');
           starButton.innerHTML = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" ' +
-            'stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">' +
-            '<polygon points="12 2.6 15.09 8.86 22 9.87 17 14.74 18.18 21.62 12 18.37 5.82 21.62 7 14.74 2 9.87 8.91 8.86 12 2.6"></polygon></svg>';
+            'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
+            '<line x1="4" y1="21" x2="4" y2="14"></line>' +
+            '<line x1="4" y1="10" x2="4" y2="3"></line>' +
+            '<line x1="12" y1="21" x2="12" y2="12"></line>' +
+            '<line x1="12" y1="8" x2="12" y2="3"></line>' +
+            '<line x1="20" y1="21" x2="20" y2="16"></line>' +
+            '<line x1="20" y1="12" x2="20" y2="3"></line>' +
+            '<line x1="1" y1="14" x2="7" y2="14"></line>' +
+            '<line x1="9" y1="8" x2="15" y2="8"></line>' +
+            '<line x1="17" y1="16" x2="23" y2="16"></line></svg>';
           try { starButton.style.color = getComputedStyle(logo).color || 'inherit'; } catch (e) {}
           starButton.addEventListener('click', function(e) {
             e.preventDefault();
@@ -1667,7 +2187,7 @@ enum ContentFilter {
           header.appendChild(starButton);
           if (!window.__biHeaderFixLogged) {
             window.__biHeaderFixLogged = true;
-            biLog('[header] star injected depth=' + depth);
+            biLog('[header] control button injected depth=' + depth);
           }
         }
       }
@@ -1787,6 +2307,8 @@ enum ContentFilter {
           if (visibleCommentSheet()) return;
           window.__biCommentSheetOpen = false;
           biLog('[comments] open=false');
+          beginFeedDiagnostic('comments-close');
+          requestAnimationFrame(apply);
           reportNavVisibility();
         }, 250);
       }
@@ -2084,35 +2606,100 @@ enum ContentFilter {
 
       let applyScheduled = false;
       let lastApply = 0;
+      let applyPerf = { count: 0, total: 0, max: 0, stages: {} };
+      function clockNow() {
+        return (window.performance && performance.now) ? performance.now() : Date.now();
+      }
+      function recordApplyTiming(total, timings) {
+        applyPerf.count++;
+        applyPerf.total += total;
+        applyPerf.max = Math.max(applyPerf.max, total);
+        timings.forEach(function(item) {
+          const value = applyPerf.stages[item.name] || { total: 0, max: 0 };
+          value.total += item.duration;
+          value.max = Math.max(value.max, item.duration);
+          applyPerf.stages[item.name] = value;
+        });
+        if (applyPerf.count < 20) return;
+        if ((window.__biApplyPerfReports || 0) < 6) {
+          window.__biApplyPerfReports = (window.__biApplyPerfReports || 0) + 1;
+          const slowest = Object.keys(applyPerf.stages).map(function(name) {
+            return { name: name, total: applyPerf.stages[name].total, max: applyPerf.stages[name].max };
+          }).sort(function(a, b) { return b.total - a.total; }).slice(0, 5).map(function(item) {
+            return item.name + ':' + item.total.toFixed(1) + '/' + item.max.toFixed(1);
+          });
+          biLog('[apply-perf] count=' + applyPerf.count + ' total=' + applyPerf.total.toFixed(1) +
+            ' max=' + applyPerf.max.toFixed(1) + ' stages=' + slowest.join(','));
+        }
+        applyPerf = { count: 0, total: 0, max: 0, stages: {} };
+      }
+
       function apply() {
         applyScheduled = false;
         lastApply = Date.now();
+        let stage = 'setup';
+        const started = clockNow();
+        const timings = [];
+        const measureApply = (window.__biApplyPerfReports || 0) < 6;
+        function run(name, fn) {
+          stage = name;
+          if (!measureApply) { fn(); return; }
+          const before = clockNow();
+          fn();
+          timings.push({ name: name, duration: clockNow() - before });
+        }
         try {
-          ensureStyleInjected();
-          hideSponsoredAndReels();
-          hideFeedNoise();
-          lockToPrimaryReel();
-          updateScrollLock();
-          forcePlaysInline();
-          dismissAppNag();
-          hideOriginalNav();
-          hideBottomBars();
-          fixSearchPage();
-          fixDirectInbox();
-          fixDirectMediaQuality();
-          upgradeDirectPreviews();
-          fixDMShareCardCursor();
-          fixHomeHeader();
-          removeReservedNavSpace();
-          updateCommentSheet();
-          reportNavVisibility();
-          reportAvatar();
-          reportProfile();
-          reportFeedHealth();
-          armFeedWatchdog();
-          reportBackgroundColor();
+          run('style', ensureStyleInjected);
+          const path = location.pathname;
+          const isHome = path === '/';
+          const isDirect = /^\\/direct\\//.test(path);
+          const isSearch = path.indexOf('/explore/search') === 0;
+
+          run('hide-sponsored-reels', hideSponsoredAndReels);
+          run('hide-feed-noise', hideFeedNoise);
+          run('lock-primary-reel', lockToPrimaryReel);
+          run('update-scroll-lock', updateScrollLock);
+          run('plays-inline', forcePlaysInline);
+          run('dismiss-app-nag', dismissAppNag);
+          run('hide-original-nav', hideOriginalNav);
+          if (!isHome) run('hide-bottom-bars', hideBottomBars);
+          if (isSearch) run('search', fixSearchPage);
+          // Resolve own-profile identity before the inbox header needs it, so
+          // the first Direct apply can center the title instead of waiting for
+          // an unrelated later mutation.
+          run('report-profile', reportProfile);
+          if (isDirect) {
+            run('direct-inbox', fixDirectInbox);
+            run('dm-header', fixDMHeader);
+            run('dm-scroll', fixDirectThreadScroll);
+            run('dm-media-quality', fixDirectMediaQuality);
+            run('dm-preview-upgrade', upgradeDirectPreviews);
+            run('dm-card-cursor', fixDMShareCardCursor);
+          }
+          if (isHome) {
+            run('home-header', fixHomeHeader);
+            run('home-nav-space', removeReservedNavSpace);
+          }
+          run('comments', updateCommentSheet);
+          run('report-nav', reportNavVisibility);
+          run('report-avatar', reportAvatar);
+          run('report-feed', reportFeedHealth);
+          run('feed-watchdog', armFeedWatchdog);
+          run('report-background', reportBackgroundColor);
+          if (measureApply) recordApplyTiming(clockNow() - started, timings);
         } catch (e) {
-          biLog('[error] apply failed: ' + (e && e.message ? e.message : e));
+          biLog('[apply-error] stage=' + stage + ' path=' + diagnosticPath(location.pathname) + ' doc=' + documentID +
+            ' error=' + (e && e.message ? e.message : e));
+        } finally {
+          // Marks this document as having run its own DOM-filter pass at
+          // least once (style injected, header restyled) — see
+          // maybePostFavReady(). Set even if a stage above threw, since the
+          // earlier stages (style, header) already ran by then and waiting
+          // forever for a clean pass would just re-cover a working page.
+          if (!window.__biFirstApplyDone) {
+            window.__biFirstApplyDone = true;
+            maybePostFavReady();
+          }
         }
       }
 
@@ -2127,7 +2714,23 @@ enum ContentFilter {
         setTimeout(fire, wait);
       }
 
-      biLog('[boot] filter running on ' + location.pathname);
+      postLog('[boot] filter running on ' + diagnosticPath(location.pathname) + ' id=' + documentID +
+        ' frame=' + (isTopFrame ? 'top' : 'sub') + ' origin=' + location.origin);
+      if (isTopFrame && !window.__biLifecycleHooked) {
+        window.__biLifecycleHooked = true;
+        window.addEventListener('pageshow', function(e) {
+          biLog('[lifecycle] pageshow persisted=' + !!e.persisted + ' doc=' + documentID +
+            ' path=' + diagnosticPath(location.pathname));
+        });
+        window.addEventListener('pagehide', function(e) {
+          biLog('[lifecycle] pagehide persisted=' + !!e.persisted + ' doc=' + documentID +
+            ' path=' + diagnosticPath(location.pathname));
+        });
+        document.addEventListener('visibilitychange', function() {
+          biLog('[lifecycle] visibility=' + document.visibilityState + ' doc=' + documentID +
+            ' path=' + diagnosticPath(location.pathname));
+        });
+      }
       if (isTopFrame && !window.__biErrHooked) {
         window.__biErrHooked = true;
         window.addEventListener('error', function(e) {
@@ -2154,9 +2757,54 @@ enum ContentFilter {
       window.__biSetFavorites = setFavorites;
       setFavorites(window.__biFavorites, window.__biFavoritesEnabled);
 
+      function classTokens(value, markersOnly) {
+        return (value || '').split(/\\s+/).filter(function(token) {
+          if (!token) return false;
+          return markersOnly ? token.indexOf('__bi_') === 0 : token.indexOf('__bi_') !== 0;
+        }).sort();
+      }
+
+      function removedClassMarkers(m) {
+        if (m.type !== 'attributes' || m.attributeName !== 'class') return [];
+        const oldMarkers = classTokens(m.oldValue, true);
+        const now = (m.target && m.target.getAttribute) ? m.target.getAttribute('class') : '';
+        const current = new Set(classTokens(now, true));
+        return oldMarkers.filter(function(token) { return !current.has(token); });
+      }
+
+      // Suppress only expected Lillygram marker additions. If React
+      // removes one of our markers, that is a real visibility change and must
+      // immediately refilter the article instead of waiting for another mutation.
+      function selfClassChurn(m) {
+        if (m.type !== 'attributes' || m.attributeName !== 'class') return false;
+        if (removedClassMarkers(m).length) return false;
+        const now = (m.target && m.target.getAttribute) ? m.target.getAttribute('class') : '';
+        return classTokens(m.oldValue, false).join(' ') === classTokens(now, false).join(' ');
+      }
+
       const observer = new MutationObserver(function(mutations) {
         let viewerSurfaceChanged = false;
+        let realChange = false;
         for (let i = 0; i < mutations.length; i++) {
+          const mutation = mutations[i];
+          if (mutation.type === 'childList') {
+            if ((mutation.addedNodes && mutation.addedNodes.length) ||
+                (mutation.removedNodes && mutation.removedNodes.length)) realChange = true;
+            noteFeedArticles(mutation.addedNodes, 'added');
+            noteFeedArticles(mutation.removedNodes, 'removed');
+          } else if (!selfClassChurn(mutation)) {
+            const removedMarkers = removedClassMarkers(mutation);
+            if (removedMarkers.length) {
+              if (!feedDiagnostic && location.pathname === '/') beginFeedDiagnostic('marker-removal');
+              if (feedDiagnostic) {
+                feedDiagnostic.markerRemoved += removedMarkers.length;
+                feedDiagnostic.reused++;
+              }
+              const article = mutation.target && mutation.target.closest ? mutation.target.closest('article') : null;
+              if (article) filterArticle(article);
+            }
+            realChange = true;
+          }
           if (mutations[i].type === 'attributes' && /^\\/(stories|reels?)\\//.test(location.pathname)) {
             viewerSurfaceChanged = true;
           }
@@ -2173,6 +2821,9 @@ enum ContentFilter {
           for (let j = 0; j < added.length; j++) {
             const node = added[j];
             if (!node || node.nodeType !== 1) continue;
+            // Pending DM reel surfaces are hidden in this same mutation
+            // microtask, before WebKit gets a chance to paint Instagram's slide.
+            gatePendingDMReel(node);
             if (node.matches('video, img, canvas, [role="dialog"]') ||
                 (node.querySelector && node.querySelector('video, img, canvas, [role="dialog"]'))) {
               viewerSurfaceChanged = true;
@@ -2196,7 +2847,7 @@ enum ContentFilter {
             reportBackgroundColor();
           }, 50);
         }
-        scheduleApply();
+        if (realChange) scheduleApply();
       });
 
       function start() {
@@ -2205,6 +2856,7 @@ enum ContentFilter {
             childList: true,
             subtree: true,
             attributes: true,
+            attributeOldValue: true,
             attributeFilter: ['class', 'style']
           });
           apply();

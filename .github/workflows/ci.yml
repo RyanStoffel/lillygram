@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-metadata:
+    name: Release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate versions and changelog
+        run: python3 tools/validate-release.py
+
+  userscript:
+    name: Injected JavaScript
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tools/package-lock.json
+      - name: Install test dependencies
+        run: npm ci --prefix tools
+      - name: Run userscript harness
+        run: tools/check.sh
+
+  ios:
+    name: iOS simulator build
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build without signing
+        run: |
+          xcodebuild \
+            -project ios/Lillygram.xcodeproj \
+            -scheme Lillygram \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            BUG_REPORT_TOKEN=ci-placeholder \
+            build
+      - name: Verify archive-time configuration path
+        run: |
+          plist="$RUNNER_TEMP/DerivedData/Build/Products/Debug-iphonesimulator/Lillygram.app/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :BugReportToken' "$plist")" = "ci-placeholder"
