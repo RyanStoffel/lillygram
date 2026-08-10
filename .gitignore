@@ -14,3 +14,10 @@ tools/build/
 # Python
 __pycache__/
 *.py[cod]
+
+
+# Local AI tooling
+AGENTS.md
+CLAUDE.md
+.claude/
+.opencode/
