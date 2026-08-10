@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. Versions follow
 `MARKETING_VERSION (CURRENT_PROJECT_VERSION)` from the Xcode project.
 
+## [Unreleased]
+
+### Changed
+- Replaced the `mailto:` bug-report flow with direct submission as a GitHub
+  Issue on a new private `RyanStoffel/lillygram-bugs` repo. Reports now
+  capture the reporter's name; a GitHub Pages dashboard
+  (`ryanstoffel.github.io/lillygram-bugs`) lists them for private viewing.
+  Also fixed a stale hardcoded "1.0 (1)" app-version string in the bug
+  report form's System Information section.
+
 ## [0.2.0] (build 4) — 2026-08-09
 
 ### Changed

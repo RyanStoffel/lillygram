@@ -364,15 +364,51 @@ struct AppSettingsView: View {
     }
 }
 
-/// Native bug reporting interface.
+/// GitHub API config for the in-app bug reporter. `issuesToken` is a
+/// fine-grained personal access token scoped to ONLY
+/// `Issues: Read and write` on the private `RyanStoffel/lillygram-bugs`
+/// repo — nothing else (no Contents, no other repos). It ships inside the
+/// app bundle and is extractable by anyone with the IPA; that's an accepted
+/// tradeoff for a two-person TestFlight app, bounded by the token's narrow
+/// scope (worst case: someone spams issues on a private repo only Ryan can
+/// see — no code, no other repo, nothing else is reachable with it).
+private enum BugReportConfig {
+    static let repo = "RyanStoffel/lillygram-bugs"
+    static let issuesToken = "REPLACE_WITH_FINE_GRAINED_PAT"
+}
+
+private struct GitHubIssueRequest: Encodable {
+    let title: String
+    let body: String
+}
+
+/// Native bug reporting interface. Reports are filed directly as GitHub
+/// Issues on the private `lillygram-bugs` repo (see `BugReportConfig`) —
+/// visible only to Ryan there, or via that repo's GitHub Pages dashboard.
 struct BugReportView: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var reporterName = UserDefaults.standard.string(forKey: "biBugReporterName") ?? ""
     @State private var bugDescription = ""
+    @State private var isSending = false
     @State private var didSend = false
+    @State private var sendError: String?
+
+    private var canSend: Bool {
+        !reporterName.trimmingCharacters(in: .whitespaces).isEmpty
+            && !bugDescription.trimmingCharacters(in: .whitespaces).isEmpty
+            && !isSending
+    }
 
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    TextField("Your name", text: $reporterName)
+                        .textInputAutocapitalization(.words)
+                } footer: {
+                    Text("So Ryan knows who ran into this.")
+                }
+
                 Section {
                     TextEditor(text: $bugDescription)
                         .frame(minHeight: 120)
@@ -386,7 +422,7 @@ struct BugReportView: View {
                     HStack {
                         Text("App Version")
                         Spacer()
-                        Text("1.0 (1)")
+                        Text(appVersionString)
                             .foregroundStyle(.secondary)
                     }
                     HStack {
@@ -404,35 +440,69 @@ struct BugReportView: View {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Send") {
-                        sendReport()
+                    if isSending {
+                        ProgressView()
+                    } else {
+                        Button("Send") { sendReport() }
+                            .disabled(!canSend)
                     }
-                    .disabled(bugDescription.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
-            .alert("Report Ready", isPresented: $didSend) {
+            .alert("Report Sent", isPresented: $didSend) {
                 Button("OK") { dismiss() }
             } message: {
                 Text("Thank you for helping improve Lillygram!")
+            }
+            .alert("Couldn't Send Report", isPresented: .constant(sendError != nil), presenting: sendError) { _ in
+                Button("OK") { sendError = nil }
+            } message: { message in
+                Text(message)
             }
         }
     }
 
     private func sendReport() {
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
-        let body = """
-        Bug Description:
-        \(bugDescription)
+        let name = reporterName.trimmingCharacters(in: .whitespaces)
+        UserDefaults.standard.set(name, forKey: "biBugReporterName")
+        isSending = true
 
-        ---
-        App Version: \(appVersionString)
-        iOS Version: \(UIDevice.current.systemVersion)
-        Device: \(UIDevice.current.model)
-        """
-        let encodedBody = body.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        if let mailURL = URL(string: "mailto:stoffel.thomas.ryan@gmail.com?subject=Lillygram%20Bug%20Report&body=\(encodedBody)") {
-            UIApplication.shared.open(mailURL)
-        }
-        didSend = true
+        let summary = bugDescription
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .prefix(72)
+        let issue = GitHubIssueRequest(
+            title: "[\(name)] \(summary)",
+            body: """
+            **Reported by:** \(name)
+
+            **Description**
+            \(bugDescription)
+
+            ---
+            App Version: \(appVersionString)
+            iOS Version: \(UIDevice.current.systemVersion)
+            Device: \(UIDevice.current.model)
+            """
+        )
+
+        var request = URLRequest(url: URL(string: "https://api.github.com/repos/\(BugReportConfig.repo)/issues")!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(BugReportConfig.issuesToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONEncoder().encode(issue)
+
+        URLSession.shared.dataTask(with: request) { _, response, error in
+            DispatchQueue.main.async {
+                isSending = false
+                if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    didSend = true
+                } else {
+                    UINotificationFeedbackGenerator().notificationOccurred(.error)
+                    sendError = error?.localizedDescription
+                        ?? "The server rejected the report (\((response as? HTTPURLResponse)?.statusCode ?? -1)). Please try again."
+                }
+            }
+        }.resume()
     }
 }
