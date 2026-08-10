@@ -2164,7 +2164,7 @@ enum ContentFilter {
           const starButton = document.createElement('button');
           starButton.id = '__bi_star_btn';
           starButton.setAttribute('type', 'button');
-          starButton.setAttribute('aria-label', 'BetterInstagram Controls');
+          starButton.setAttribute('aria-label', 'Lillygram Controls');
           starButton.innerHTML = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" ' +
             'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
             '<line x1="4" y1="21" x2="4" y2="14"></line>' +
@@ -2772,7 +2772,7 @@ enum ContentFilter {
         return oldMarkers.filter(function(token) { return !current.has(token); });
       }
 
-      // Suppress only expected BetterInstagram marker additions. If React
+      // Suppress only expected Lillygram marker additions. If React
       // removes one of our markers, that is a real visibility change and must
       // immediately refilter the article instead of waiting for another mutation.
       function selfClassChurn(m) {

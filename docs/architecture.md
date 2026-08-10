@@ -2,7 +2,7 @@
 
 ## One-paragraph model
 
-BetterInstagram is a thin SwiftUI shell around **four persistent `WKWebView`s**
+Lillygram is a thin SwiftUI shell around **four persistent `WKWebView`s**
 (one per tab: home, search, direct, profile) that all load the real
 `instagram.com` and **share a single `WKUserContentController`**. Home is created
 in `WebViewStore.init()`; search/direct/profile are created immediately from
@@ -17,11 +17,11 @@ favorites feed and is detached/destroyed after a successful extraction+density
 pass (see `favorites-feed.md`). Native and web talk over `postMessage` handlers
 and `evaluateJavaScript` / `callAsyncJavaScript`.
 
-## Files (all under `ios/BetterInstagram/`)
+## Files (all under `ios/Lillygram/`)
 
 | File | Role |
 | --- | --- |
-| `BetterInstagramApp.swift` | `@main` App; shows `ContentView`. |
+| `LillygramApp.swift` | `@main` App; shows `ContentView`. |
 | `ContentView.swift` | Root `TabView` (home/search/direct/profile), onboarding cover, favorites-editor sheet, the two splashes (`LaunchSplashView`/`ResaveSplashView`) chosen by `activeSplash`, and the `FeedErrorView` retry screen. |
 | `WebViewStore.swift` | Owns the 4 tab webviews (home eager; others created via `ensureWebView(for:)`, called for all three during the launch splash by `ContentView.preloadSecondaryTabs()` — see architecture note below) + the disposable harvest webview; the shared `WKUserContentController`; login detection; favorites sync/harvest; navigation reason/id tracing; visibility-aware bottom clearance; and the home `UIRefreshControl` phase machine. The native brain. |
 | `ContentFilter.swift` | **The injected userscript**, as a Swift multiline string (`ContentFilter.script`), plus `harvestScript`. All web-side behavior lives here. |
@@ -173,15 +173,15 @@ prints a versioned `[BI-health]` probe. All diagnostics are console-only.
 
 ## Build & target
 
-- **`ios/BetterInstagram.xcodeproj/project.pbxproj` is the source of truth.** It
+- **`ios/Lillygram.xcodeproj/project.pbxproj` is the source of truth.** It
   was hand-edited (deployment target **iOS 26.0**, `DEVELOPMENT_TEAM
-  9D3GQSX699`, explicit file list). `xcodegen` is **not installed** — do **not**
+  PD623TGVBL`, explicit file list). `xcodegen` is **not installed** — do **not**
   regenerate from `project.yml` (it would drop the hand edits and the iOS-26
   target). New Swift files must be added to the pbxproj manually.
-- Bundle id `com.betterinstagram.app`, Swift 5, portrait only.
+- Bundle id `com.lillygram.app`, Swift 5, portrait only.
 - Build (no signing, simulator):
   ```sh
-  xcodebuild -project ios/BetterInstagram.xcodeproj -scheme BetterInstagram \
+  xcodebuild -project ios/Lillygram.xcodeproj -scheme Lillygram \
     -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
     CODE_SIGNING_ALLOWED=NO build
   ```

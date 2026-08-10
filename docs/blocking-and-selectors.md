@@ -156,7 +156,7 @@ proposing.
   The full logo-box invariant (position/left/top/transform/z-index/pointer
   events) is reasserted each pass. The current caret fallback remains geometric:
   hide small SVGs near the verified header center while excluding the logo,
-  BetterInstagram control, and article content. It is deliberately not broadened
+  Lillygram control, and article content. It is deliberately not broadened
   further until bounded `[header-scan]` device captures identify the current
   sticky variants.
 - `currentPageBackground()` samples and composites Instagram's visible top-edge
@@ -178,7 +178,7 @@ proposing.
   the tab bar.
 - `fixDirectMediaQuality()` / `upgradeDirectPreviews()` swap DM share-card
   preview `<img>`s to their largest `srcset` candidate (R4: no blurry previews).
-- Feed marker mutation suppression ignores only BetterInstagram marker
+- Feed marker mutation suppression ignores only Lillygram marker
   additions. If React removes a `__bi_*` hide marker, the observer immediately
   re-filters the owning article and records a bounded `[feed-remount]` capture.
 

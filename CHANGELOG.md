@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. Versions follow
 `MARKETING_VERSION (CURRENT_PROJECT_VERSION)` from the Xcode project.
 
+## [0.2.0] (build 4) — 2026-08-09
+
+### Changed
+- Renamed the app from BetterInstagram to **Lillygram**, top to bottom: Xcode
+  project/target/scheme, bundle id (`com.betterinstagram.app` ->
+  `com.lillygram.app`), display name, GitHub repo
+  (`RyanStoffel/better-instagram` -> `RyanStoffel/lillygram`), Pages URLs,
+  in-app links, docs, and tooling.
+- Switched code signing to automatic, targeting the Apple Developer team
+  actually signed into this Mac (`PD623TGVBL`), in prep for a TestFlight build.
+- Fixed two dead `betterinstagram.app` legal links in the favorites-editor
+  footer that were never updated when the working Privacy/Terms pages shipped.
+
 ## [0.2.0] (build 3) — 2026-08-09
 
 First push of the working app to `main` (previously only planning docs).

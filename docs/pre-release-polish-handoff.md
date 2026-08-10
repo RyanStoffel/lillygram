@@ -1,6 +1,6 @@
 # Pre-Release Polish & Performance Handoff Plan
 
-**Target Application:** BetterInstagram (iOS / SwiftUI + WKWebView)  
+**Target Application:** Lillygram (iOS / SwiftUI + WKWebView)  
 **Date:** July 26, 2026  
 **Document Status:** Updated Post-Device Testing — Ready for Review & Execution  
 **File Location:** `docs/pre-release-polish-handoff.md`
@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary & Status Update
 
-BetterInstagram is a SwiftUI wrapper around four persistent `WKWebView` instances running `instagram.com` with a single shared `WKUserContentController`. A comprehensive userscript (`ContentFilter.swift`) removes distractions (Reels feed, Explore grid, ads) while splicing the user's selected favorites into the home feed.
+Lillygram is a SwiftUI wrapper around four persistent `WKWebView` instances running `instagram.com` with a single shared `WKUserContentController`. A comprehensive userscript (`ContentFilter.swift`) removes distractions (Reels feed, Explore grid, ads) while splicing the user's selected favorites into the home feed.
 
 ### Recently Resolved Items (Confirmed Working)
 - **Top & Bottom Safe-Area Color Matching**: The top status-bar safe area and bottom footer safe area now continuously match Instagram's page/header background color (`#0c1014` / `rgb(12, 16, 20)` in Dark Mode, white in Light Mode).
@@ -29,11 +29,11 @@ BetterInstagram is a SwiftUI wrapper around four persistent `WKWebView` instance
 
 | File | Primary Responsibility | Key Invariants / Notes |
 | --- | --- | --- |
-| `ios/BetterInstagram/ContentView.swift` | Root view, `TabView`, splash overlays (`LaunchSplashView`, `ResaveSplashView`), `FeedErrorView`. | Tab bar visibility driven by `bridge.isNavVisible`. `ZStack` background uses `bridge.pageBackground.ignoresSafeArea()`. |
-| `ios/BetterInstagram/ContentFilter.swift` | Multiline JS string (`ContentFilter.script`). Handles DOM filtering, route guards, network hooks, and color reporting. | **All regex backslashes MUST be doubled** (`\/` → `\\/`). Must pass `./tools/check.sh` on every edit. |
-| `ios/BetterInstagram/WebViewStore.swift` | Manages 4 tab webviews + hidden harvest webview, `WKUserContentController`, cookie observing, and message handlers (`biNav`, `biBg`, `biFavReady`, `biFeedStuck`). | Shared data store across webviews. Native bridge callbacks run on MainActor. |
-| `ios/BetterInstagram/OnboardingView.swift` | `FavoritesPickerView` for initial onboarding and star-tab editor. Also houses `AppSettingsView` and `BugReportView`. | Handles following list load and search query debounce (350ms). |
-| `ios/BetterInstagram/WebBridge.swift` | `@Published` state mirrored out of web pages (`isNavVisible`, `avatarURL`, `pageBackground`, `safeAreaBackground`). | Used by `ContentView` to coordinate UI layout. |
+| `ios/Lillygram/ContentView.swift` | Root view, `TabView`, splash overlays (`LaunchSplashView`, `ResaveSplashView`), `FeedErrorView`. | Tab bar visibility driven by `bridge.isNavVisible`. `ZStack` background uses `bridge.pageBackground.ignoresSafeArea()`. |
+| `ios/Lillygram/ContentFilter.swift` | Multiline JS string (`ContentFilter.script`). Handles DOM filtering, route guards, network hooks, and color reporting. | **All regex backslashes MUST be doubled** (`\/` → `\\/`). Must pass `./tools/check.sh` on every edit. |
+| `ios/Lillygram/WebViewStore.swift` | Manages 4 tab webviews + hidden harvest webview, `WKUserContentController`, cookie observing, and message handlers (`biNav`, `biBg`, `biFavReady`, `biFeedStuck`). | Shared data store across webviews. Native bridge callbacks run on MainActor. |
+| `ios/Lillygram/OnboardingView.swift` | `FavoritesPickerView` for initial onboarding and star-tab editor. Also houses `AppSettingsView` and `BugReportView`. | Handles following list load and search query debounce (350ms). |
+| `ios/Lillygram/WebBridge.swift` | `@Published` state mirrored out of web pages (`isNavVisible`, `avatarURL`, `pageBackground`, `safeAreaBackground`). | Used by `ContentView` to coordinate UI layout. |
 | `tools/check.sh` | Test runner script. Extracts scripts from `ContentFilter.swift`, syntax-checks with node, and executes `tools/userscript-init-test.js`. | **Mandatory gate.** Must run and output `ALL CHECKS PASSED`. |
 
 ---
@@ -232,7 +232,7 @@ Before opening the PR, run:
 
 2. **Xcode Build & Archive Verification**:
    ```sh
-   xcodebuild -project ios/BetterInstagram.xcodeproj -scheme BetterInstagram \
+   xcodebuild -project ios/Lillygram.xcodeproj -scheme Lillygram \
      -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
      CODE_SIGNING_ALLOWED=NO build
    ```
@@ -246,4 +246,4 @@ Before opening the PR, run:
 
 ## 5. Execution Summary
 
-This handoff plan outlines the exact technical requirements and architectural invariants needed to take BetterInstagram to release candidate status. Awaiting instructions to proceed.
+This handoff plan outlines the exact technical requirements and architectural invariants needed to take Lillygram to release candidate status. Awaiting instructions to proceed.

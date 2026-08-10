@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct BetterInstagramApp: App {
+struct LillygramApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()

@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		07772E0B25C4920460423C45 /* BetterInstagramApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 779DBE5B8D690BD0A5DD1F21 /* BetterInstagramApp.swift */; };
+		07772E0B25C4920460423C45 /* LillygramApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 779DBE5B8D690BD0A5DD1F21 /* LillygramApp.swift */; };
 		3EDCFA094557502906B65C2F /* ContentFilter.swift in Sources */ = {isa = PBXBuildFile; fileRef = F04D8A75CB872358306F2580 /* ContentFilter.swift */; };
 		4E94196575BEBDBFB9AF6E22 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34774AFAF4AEC604C630F5DA /* ContentView.swift */; };
 		91205F752FFB4E7400C5C3FF /* WebViewStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91205F742FFB4E6E00C5C3FF /* WebViewStore.swift */; };
@@ -23,8 +23,8 @@
 		266440E90330CCEA275EEA69 /* WebBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebBridge.swift; sourceTree = "<group>"; };
 		2D5A0003842372DB799B5E9B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		34774AFAF4AEC604C630F5DA /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
-		36A05B50C6F2DF8237823C93 /* BetterInstagram.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BetterInstagram.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		779DBE5B8D690BD0A5DD1F21 /* BetterInstagramApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BetterInstagramApp.swift; sourceTree = "<group>"; };
+		36A05B50C6F2DF8237823C93 /* Lillygram.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Lillygram.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		779DBE5B8D690BD0A5DD1F21 /* LillygramApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LillygramApp.swift; sourceTree = "<group>"; };
 		91205F742FFB4E6E00C5C3FF /* WebViewStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebViewStore.swift; sourceTree = "<group>"; };
 		91C920FC2FFC8ED400BBCA94 /* WKWebView+NoAccessory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WKWebView+NoAccessory.swift"; sourceTree = "<group>"; };
 		F04D8A75CB872358306F2580 /* ContentFilter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentFilter.swift; sourceTree = "<group>"; };
@@ -34,13 +34,13 @@
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
-		3300A29CA869A441BE2F3508 /* BetterInstagram */ = {
+		3300A29CA869A441BE2F3508 /* Lillygram */ = {
 			isa = PBXGroup;
 			children = (
 				91C920FC2FFC8ED400BBCA94 /* WKWebView+NoAccessory.swift */,
 				91205F742FFB4E6E00C5C3FF /* WebViewStore.swift */,
 				2D5A0003842372DB799B5E9B /* Assets.xcassets */,
-				779DBE5B8D690BD0A5DD1F21 /* BetterInstagramApp.swift */,
+				779DBE5B8D690BD0A5DD1F21 /* LillygramApp.swift */,
 				F04D8A75CB872358306F2580 /* ContentFilter.swift */,
 				34774AFAF4AEC604C630F5DA /* ContentView.swift */,
 				266440E90330CCEA275EEA69 /* WebBridge.swift */,
@@ -48,13 +48,13 @@
 				A1B2C3D4E5F60718293A4B5F /* OnboardingView.swift */,
 				BB1CE5A1D9F14C2E8A73B002 /* BlockingRules.json */,
 			);
-			path = BetterInstagram;
+			path = Lillygram;
 			sourceTree = "<group>";
 		};
 		CFCB791B725358EB5EE0533E /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				36A05B50C6F2DF8237823C93 /* BetterInstagram.app */,
+				36A05B50C6F2DF8237823C93 /* Lillygram.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -62,7 +62,7 @@
 		F82839A113E3140860A2C129 = {
 			isa = PBXGroup;
 			children = (
-				3300A29CA869A441BE2F3508 /* BetterInstagram */,
+				3300A29CA869A441BE2F3508 /* Lillygram */,
 				CFCB791B725358EB5EE0533E /* Products */,
 			);
 			sourceTree = "<group>";
@@ -70,9 +70,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		F8A8660482EE919080EB66E2 /* BetterInstagram */ = {
+		F8A8660482EE919080EB66E2 /* Lillygram */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = F15E12F0A372FE42CAF01FDA /* Build configuration list for PBXNativeTarget "BetterInstagram" */;
+			buildConfigurationList = F15E12F0A372FE42CAF01FDA /* Build configuration list for PBXNativeTarget "Lillygram" */;
 			buildPhases = (
 				5892E7A57770CDE243B7F30C /* Sources */,
 				742A9AF46B25A4684B34662A /* Resources */,
@@ -81,11 +81,11 @@
 			);
 			dependencies = (
 			);
-			name = BetterInstagram;
+			name = Lillygram;
 			packageProductDependencies = (
 			);
-			productName = BetterInstagram;
-			productReference = 36A05B50C6F2DF8237823C93 /* BetterInstagram.app */;
+			productName = Lillygram;
+			productReference = 36A05B50C6F2DF8237823C93 /* Lillygram.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -96,8 +96,15 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					F8A8660482EE919080EB66E2 = {
+						CreatedOnToolsVersion = 16.0;
+						DevelopmentTeam = PD623TGVBL;
+						ProvisioningStyle = Automatic;
+					};
+				};
 			};
-			buildConfigurationList = C9D58FEB9F7022846ADC1C58 /* Build configuration list for PBXProject "BetterInstagram" */;
+			buildConfigurationList = C9D58FEB9F7022846ADC1C58 /* Build configuration list for PBXProject "Lillygram" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -111,7 +118,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				F8A8660482EE919080EB66E2 /* BetterInstagram */,
+				F8A8660482EE919080EB66E2 /* Lillygram */,
 			);
 		};
 /* End PBXProject section */
@@ -133,7 +140,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				07772E0B25C4920460423C45 /* BetterInstagramApp.swift in Sources */,
+				07772E0B25C4920460423C45 /* LillygramApp.swift in Sources */,
 				91205F752FFB4E7400C5C3FF /* WebViewStore.swift in Sources */,
 				3EDCFA094557502906B65C2F /* ContentFilter.swift in Sources */,
 				91C920FD2FFC8ED700BBCA94 /* WKWebView+NoAccessory.swift in Sources */,
@@ -151,11 +158,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = Lillygram;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 3;
-				DEVELOPMENT_TEAM = 9D3GQSX699;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 4;
+				DEVELOPMENT_TEAM = PD623TGVBL;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Better Instagram";
+				INFOPLIST_KEY_CFBundleDisplayName = Lillygram;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -166,8 +173,8 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 0.2.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.betterinstagram.app;
-				PRODUCT_NAME = BetterInstagram;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lillygram.app;
+				PRODUCT_NAME = Lillygram;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -297,11 +304,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = Lillygram;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 3;
-				DEVELOPMENT_TEAM = 9D3GQSX699;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 4;
+				DEVELOPMENT_TEAM = PD623TGVBL;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Better Instagram";
+				INFOPLIST_KEY_CFBundleDisplayName = Lillygram;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -312,8 +319,8 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 0.2.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.betterinstagram.app;
-				PRODUCT_NAME = BetterInstagram;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lillygram.app;
+				PRODUCT_NAME = Lillygram;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -323,7 +330,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		C9D58FEB9F7022846ADC1C58 /* Build configuration list for PBXProject "BetterInstagram" */ = {
+		C9D58FEB9F7022846ADC1C58 /* Build configuration list for PBXProject "Lillygram" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				36346D0E5418EBE3B82488D5 /* Debug */,
@@ -332,7 +339,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
-		F15E12F0A372FE42CAF01FDA /* Build configuration list for PBXNativeTarget "BetterInstagram" */ = {
+		F15E12F0A372FE42CAF01FDA /* Build configuration list for PBXNativeTarget "Lillygram" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				238484CFB1A46E2132882BCB /* Debug */,

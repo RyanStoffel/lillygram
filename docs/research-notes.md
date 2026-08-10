@@ -18,7 +18,7 @@ External research backing the architecture and the performance/UX standards.
   `XMLHttpRequest`/`fetch`, hooking `history.pushState`, a location guard, or
   CSS that must hide chrome before first paint — **must** be `atDocumentStart`.
   Purely reactive DOM cleanup can be `atDocumentEnd` or a `MutationObserver`.
-  BetterInstagram injects at document start and does reactive work via an
+  Lillygram injects at document start and does reactive work via an
   observer. _[verify with a current write-up]_
 
 ## 2. Declarative blocking: `WKContentRuleList`
@@ -31,7 +31,7 @@ External research backing the architecture and the performance/UX standards.
 - **Trade-off vs. our JS approach.** Content rules are fast (native matcher, off
   the main JS thread) and flash-free for *static* URL/selector blocking, but they
   are **declarative only** — they can't parse a GraphQL response, dedupe feed
-  edges, or run the favorites splice. BetterInstagram's core logic (feed rewrite,
+  edges, or run the favorites splice. Lillygram's core logic (feed rewrite,
   favorites splice, DM reel lock) is inherently imperative, so it lives in the
   userscript. **Opportunity:** move the *static* hides (Explore link, known reel
   chrome) into a `WKContentRuleList` for guaranteed flash-free blocking, keeping
@@ -41,7 +41,7 @@ External research backing the architecture and the performance/UX standards.
 
 - Keeping `WKWebView` instances **alive and warm** (rather than recreating per
   screen) avoids process spin-up and re-parse costs — the dominant technique for
-  "instant" tab switches. BetterInstagram keeps all four tab webviews
+  "instant" tab switches. Lillygram keeps all four tab webviews
   persistent. _[verify — WWDC "What's new in WebKit"/community write-ups]_
 - **Process/data-store sharing.** A shared `WKWebsiteDataStore` shares
   cookies/cache/session across webviews (needed for one login across tabs).
@@ -49,18 +49,18 @@ External research backing the architecture and the performance/UX standards.
   process sharing is managed by WebKit and the shared data store. _[verify
   current guidance for the deployment target]_
 - **Preloading.** Load secondary tabs right after auth so they're warm before
-  first tap (BetterInstagram reloads secondary tabs on login). _[verify]_
+  first tap (Lillygram reloads secondary tabs on login). _[verify]_
 
 ## 4. Avoiding white flashes & blurry media
 
 - **White/blank flash** on load/navigation typically comes from the webview's
   default opaque white background showing before content paints. Mitigations:
   `isOpaque = false` + a `backgroundColor` matched to the page, and injecting
-  page-background CSS at document start. BetterInstagram sets the background from
+  page-background CSS at document start. Lillygram sets the background from
   the reported page color (black on stories). — Apple: `WKWebView` /
   `UIView.isOpaque`. _[verify community write-ups]_
 - **Blurry previews** on DM share cards come from Instagram serving a tiny image
-  scaled up; the fix is to select the largest `srcset`/candidate. BetterInstagram
+  scaled up; the fix is to select the largest `srcset`/candidate. Lillygram
   does this in `fixDirectMediaQuality()`. (Standard responsive-images behavior;
   MDN `srcset`.)
 
@@ -75,7 +75,7 @@ External research backing the architecture and the performance/UX standards.
   reel lock we disable scrolling **surgically** (only the reel container) to keep
   native scrolling everywhere else.
 - Keep the detected web-page background separate from temporary presentation
-  chrome. BetterInstagram caches Instagram's base color per webview and uses one
+  chrome. Lillygram caches Instagram's base color per webview and uses one
   root safe-area painter; confirmed Story/Reel presentation overrides that
   painter to black without mutating the webview's base color. Do not infer that
   override from a route or navigation request: Instagram's intermediate states
@@ -89,7 +89,7 @@ External research backing the architecture and the performance/UX standards.
   private internals (class names, route shapes, GraphQL query names, rotating
   `doc_id`s). Instagram/Facebook rotate `doc_id`s on a ~weeks cadence and rename
   `xdt_api__v1__*` keys, so selector/query-based tools need periodic re-capture.
-  This is why BetterInstagram keeps a [selector reference table](blocking-and-selectors.md)
+  This is why Lillygram keeps a [selector reference table](blocking-and-selectors.md)
   and prefers structural signals (e.g. "key contains `feed__timeline`",
   "near-fullscreen `<video>`") over brittle exact class names where possible.
   — Reverse-engineering references (instaloader, instagram-private-api) and
@@ -106,7 +106,7 @@ External research backing the architecture and the performance/UX standards.
   `history.pushState()`, that initiates a real navigation.
 - The confirmed DM reel card is different: before opening it has no permalink
   (`reelAnchors=0`). Its first trusted touch lazily upgrades the visual card.
-  BetterInstagram therefore lets that touch finish, re-hit-tests the same point
+  Lillygram therefore lets that touch finish, re-hit-tests the same point
   after 120 ms, and invokes the current upgraded element. Retrying the stale
   element or an assumed anchor does not work.
 - The retry is limited to stationary taps on large media-card surfaces and is

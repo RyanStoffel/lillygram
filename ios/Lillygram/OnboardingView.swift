@@ -209,7 +209,7 @@ struct FavoritesPickerView: View {
                         .font(.footnote)
                         .foregroundStyle(.tertiary)
 
-                    Link("Privacy", destination: URL(string: "https://betterinstagram.app/privacy")!)
+                    Link("Privacy", destination: URL(string: "https://ryanstoffel.github.io/lillygram/privacy.html")!)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
 
@@ -217,7 +217,7 @@ struct FavoritesPickerView: View {
                         .font(.footnote)
                         .foregroundStyle(.tertiary)
 
-                    Link("Terms", destination: URL(string: "https://betterinstagram.app/terms")!)
+                    Link("Terms", destination: URL(string: "https://ryanstoffel.github.io/lillygram/terms.html")!)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -329,11 +329,11 @@ struct AppSettingsView: View {
                 }
 
                 Section("Legal") {
-                    Link(destination: URL(string: "https://ryanstoffel.github.io/better-instagram/privacy.html")!) {
+                    Link(destination: URL(string: "https://ryanstoffel.github.io/lillygram/privacy.html")!) {
                         Label("Privacy Policy", systemImage: "hand.raised")
                             .foregroundStyle(.primary)
                     }
-                    Link(destination: URL(string: "https://ryanstoffel.github.io/better-instagram/terms.html")!) {
+                    Link(destination: URL(string: "https://ryanstoffel.github.io/lillygram/terms.html")!) {
                         Label("Terms of Service", systemImage: "doc.text")
                             .foregroundStyle(.primary)
                     }
@@ -413,7 +413,7 @@ struct BugReportView: View {
             .alert("Report Ready", isPresented: $didSend) {
                 Button("OK") { dismiss() }
             } message: {
-                Text("Thank you for helping improve BetterInstagram!")
+                Text("Thank you for helping improve Lillygram!")
             }
         }
     }
@@ -430,7 +430,7 @@ struct BugReportView: View {
         Device: \(UIDevice.current.model)
         """
         let encodedBody = body.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        if let mailURL = URL(string: "mailto:stoffel.thomas.ryan@gmail.com?subject=BetterInstagram%20Bug%20Report&body=\(encodedBody)") {
+        if let mailURL = URL(string: "mailto:stoffel.thomas.ryan@gmail.com?subject=Lillygram%20Bug%20Report&body=\(encodedBody)") {
             UIApplication.shared.open(mailURL)
         }
         didSend = true
