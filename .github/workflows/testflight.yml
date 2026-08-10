@@ -1,10 +1,16 @@
 name: TestFlight
-run-name: TestFlight ${{ github.event.release.tag_name }}
+run-name: TestFlight ${{ github.event.release.tag_name || inputs.release_tag }}
 
 on:
   release:
     types:
       - published
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing vMAJOR.MINOR.PATCH release tag to redeploy
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -27,12 +33,13 @@ jobs:
       ASC_APP_ID: ${{ vars.APP_STORE_CONNECT_APP_ID }}
       INTERNAL_GROUP_ID: ${{ vars.TESTFLIGHT_INTERNAL_GROUP_ID }}
       APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
 
     steps:
       - name: Check out the released commit
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
 
       - name: Validate deployment configuration
@@ -48,15 +55,15 @@ jobs:
             echo "Release tag must point to a commit on main" >&2
             exit 1
           }
-          python3 tools/validate-release.py --tag "${{ github.event.release.tag_name }}"
+          python3 tools/validate-release.py --tag "$RELEASE_TAG"
 
       - name: Compute immutable build number
         id: version
         run: |
-          version="${{ github.event.release.tag_name }}"
+          version="$RELEASE_TAG"
           version="${version#v}"
           commit_count="$(git rev-list --count HEAD)"
-          build_number="${commit_count}.${GITHUB_RUN_ATTEMPT}"
+          build_number="${commit_count}.${GITHUB_RUN_NUMBER}"
           echo "marketing_version=$version" >> "$GITHUB_OUTPUT"
           echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
           echo "Deploying Lillygram $version ($build_number)"
@@ -75,7 +82,8 @@ jobs:
       - name: Prepare App Store Connect credentials
         id: credentials
         run: |
-          key_path="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          key_path="$HOME/.private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          mkdir -p "$(dirname "$key_path")"
           printf '%s' "$ASC_PRIVATE_KEY" > "$key_path"
           chmod 600 "$key_path"
           echo "key_path=$key_path" >> "$GITHUB_OUTPUT"
@@ -168,4 +176,6 @@ jobs:
 
       - name: Remove private key
         if: always()
-        run: rm -f "${{ steps.credentials.outputs.key_path }}"
+        run: |
+          rm -f "${{ steps.credentials.outputs.key_path }}"
+          rmdir "$HOME/.private_keys" 2>/dev/null || true

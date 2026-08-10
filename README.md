@@ -129,9 +129,9 @@ The Xcode `MARKETING_VERSION`, top `CHANGELOG.md` entry, README version, and
 GitHub Release tag must agree. Publishing `v<version>` as a GitHub Release from
 `main` automatically validates, signs, uploads, and waits for the build to
 become available to Internal Testers. CI derives the App Store build number as
-`<released-commit-count>.<workflow-attempt>`; the pbxproj build number is only a
-local fallback. Pure docs/tests/CI changes do not create redundant TestFlight
-builds.
+`<released-commit-count>.<TestFlight-workflow-run>`; the pbxproj build number is
+only a local fallback. Pure docs/tests/CI changes do not create redundant
+TestFlight builds.
 
 Changes are tracked in [`CHANGELOG.md`](CHANGELOG.md).
 
