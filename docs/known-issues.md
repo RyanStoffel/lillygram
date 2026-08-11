@@ -557,6 +557,52 @@ carry `aria-label="Back"`.
 
 ---
 
+## 4e. Resave/retry double-reloads home, splash drops then reappears (2026-08-11)
+
+**Requirement:** R1, R4. **Status:** implemented, pending on-device
+confirmation.
+
+**Symptom (reported, issue #7).** Selecting new favorites and hitting Save:
+splash appears correctly, drops, the new favorites don't show for a few
+seconds (stale/wrong feed visible), then the splash pops back up, then the
+correct favorites finally show.
+
+**Root cause.** `applyFavoritesSelection()` (and, for retry/pull-to-refresh/
+watchdog-recovery, `reharvestAndReloadHome()`) called `harvestFavorites()`
+*and* immediately, unconditionally reloaded the home tab in the same breath —
+before the harvest could possibly have produced any data
+(`cachedFavEdgesJSON` was still `nil` at that point). `finishHarvest()`
+*separately* reloads home once real edges exist, gated on
+`didReloadHomeForFavorites` — but both call sites had just reset that flag to
+`false`, so `finishHarvest()`'s own reload still fired afterward: two reloads
+per selection change, not one. The first (blind) reload's page has no
+favorites preload at all, so it can independently satisfy the
+`biFavReady`/`markFavDataReady()` data-ready gate on stale or empty content
+and flip `favoritesFeedReady` true — which the resave splash (`ContentView`)
+is directly bound to, so it drops onto that wrong content. The *second*,
+real reload (from `finishHarvest()`) then re-arms `favoritesFeedReady = false`
+before it loads, popping the splash back up, until its own `biFavReady`
+finally flips it true for good with the correct data. Pull-to-refresh is not
+user-visibly affected by this same bug because its splash is instead gated on
+`refreshPhase == .rebuilding`, not on `favoritesFeedReady`, for the whole
+rebuild window — but retry-from-error-screen and watchdog-recovery share the
+resave splash's `favoritesFeedReady`-gated logic and were equally exposed.
+
+**The fix.** Both call sites now only perform the immediate reload when a
+harvest *isn't* going to run at all (`favorites.isFilterEnabled` false, or no
+session — mirrors `harvestFavorites()`'s own guard); otherwise they call
+`harvestFavorites()` and let `finishHarvest()`'s existing gated reload be the
+**only** reload, once real data exists. The splash already covers the screen
+for the whole harvest window regardless (nothing to protect by reloading
+early), so this removes a redundant reload rather than changing any
+user-visible timing.
+
+**Needs on-device confirmation**: save a favorites change and confirm exactly
+one splash cycle, landing directly on the correct favorites with no visible
+intermediate feed.
+
+---
+
 ## 5. Sync custom (app) favorites → official Instagram Favorites list
 
 **Requirement:** R1. **Status:** two-way reconcile implemented and

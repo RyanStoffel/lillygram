@@ -526,8 +526,18 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             feedStuck = false
             feedRecoveryAttempts = 0
             harvestRecoveryAttempts = 0
-            harvestFavorites()
-            if let home = webViews[.home], let url = URL(string: homeURLString) {
+            if favorites.isFilterEnabled, !lastSessionID.isEmpty {
+                // finishHarvest() owns the ONE post-harvest reload once real
+                // edges exist (didReloadHomeForFavorites gates it just above).
+                // Reloading home here too, immediately, used to race it: this
+                // reload has no favorites preload yet (cachedFavEdgesJSON is
+                // still nil), can independently flip favoritesFeedReady true
+                // on stale/wrong content, and gets discarded a moment later
+                // anyway when finishHarvest's reload lands. That double
+                // reload is exactly the reported "splash drops onto wrong
+                // favorites, then pops back up" bug — see known-issues.md #7.
+                harvestFavorites()
+            } else if let home = webViews[.home], let url = URL(string: homeURLString) {
                 load(URLRequest(url: url), in: home, reason: "favorites-selection")
             }
         }
@@ -1087,8 +1097,12 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         // The rebuild is not a rendered favorites feed: keep the splash over it
         // so this generation's fail-closed deadline is meaningful again.
         favoritesFeedReady = false
-        harvestFavorites()
-        if let home = webViews[.home], let url = URL(string: homeURLString) {
+        // finishHarvest() owns the ONE post-harvest reload once real edges
+        // exist; reloading home here too, immediately, used to race it the
+        // same way applyFavoritesSelection() did -- see known-issues.md #7.
+        if favorites.isFilterEnabled, !lastSessionID.isEmpty {
+            harvestFavorites()
+        } else if let home = webViews[.home], let url = URL(string: homeURLString) {
             load(URLRequest(url: url), in: home, reason: reason)
         }
     }
