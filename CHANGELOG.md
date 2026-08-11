@@ -4,6 +4,14 @@ All notable changes to this project are documented here. Releases use the Xcode
 `MARKETING_VERSION`; CI assigns TestFlight build numbers from the released
 commit count and workflow attempt.
 
+## [0.4.1] — 2026-08-10
+
+### Fixed
+- Preferences tutorial's spotlight backdrop blurred the rest of the screen
+  instead of just dimming it, making the surrounding Settings & Support
+  content unreadable. It's now a plain dim (no blur) so the background stays
+  legible while the current step is highlighted.
+
 ## [0.4.0] — 2026-08-10
 
 ### Added

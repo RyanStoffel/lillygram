@@ -36,7 +36,7 @@ extension View {
         )
     }
 
-    /// Drives an interactive, blurred-spotlight walkthrough over whichever
+    /// Drives an interactive, dimmed-spotlight walkthrough over whichever
     /// descendant views are tagged `.tutorialTarget(_:)`. Only draws while
     /// `isActive` is true; advances on tap or the callout's controls; flips
     /// `isActive` back to false and calls `onFinish` once the last step is
@@ -94,7 +94,8 @@ private struct TutorialOverlayModifier: ViewModifier {
     }
 }
 
-/// One frame of the walkthrough: a dimmed/blurred scrim with a rounded-rect
+/// One frame of the walkthrough: a dimmed (not blurred — the background stays
+/// legible) scrim with a rounded-rect
 /// hole cut around `targetRect`, a glowing outline on the hole, and a callout
 /// card with progress dots plus Skip/Next controls.
 private struct TutorialSpotlight: View {
@@ -114,7 +115,7 @@ private struct TutorialSpotlight: View {
 
         ZStack {
             Rectangle()
-                .fill(.thinMaterial)
+                .fill(Color.black.opacity(0.55))
                 .reverseMask {
                     RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
                         .frame(width: hole.width, height: hole.height)

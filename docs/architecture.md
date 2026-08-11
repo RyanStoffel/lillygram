@@ -30,7 +30,7 @@ and `evaluateJavaScript` / `callAsyncJavaScript`.
 | `OnboardingView.swift` | `FavoritesPickerView` — post-login onboarding + the star-tab editor; lists the user's following + global search. Also `AppSettingsView` (Settings & Support, reached via the editor's gearshape) and `BugReportView`. `AppSettingsView` auto-runs the `TutorialOverlay` coach-mark walkthrough the first time it opens (persisted via `FavoritesStore.hasSeenPreferencesTutorial`) and exposes a "Take the Tour" row to replay it. |
 | `WKWebView+NoAccessory.swift` | Removes the keyboard input-accessory bar. |
 | `BlockingRules.json` | Bundled `WKContentRuleList` source — a single static `css-display-none` rule for the Explore/Reels nav chrome, compiled by `WebViewStore.compileContentRuleList()`. Additive defense-in-depth; the equivalent JS/CSS hides stay in `ContentFilter.swift`. |
-| `TutorialOverlay.swift` | Reusable coach-mark system: `.tutorialTarget(id)` tags a view's frame via an `Anchor<CGRect>` preference; `.tutorialOverlay(steps:isActive:onFinish:)` drives a blurred/dimmed spotlight + callout card (Skip/Next) over the tagged target for the active `TutorialStep`. Used by `AppSettingsView`; generic enough to reuse elsewhere. |
+| `TutorialOverlay.swift` | Reusable coach-mark system: `.tutorialTarget(id)` tags a view's frame via an `Anchor<CGRect>` preference; `.tutorialOverlay(steps:isActive:onFinish:)` drives a dimmed (not blurred) spotlight + callout card (Skip/Next) over the tagged target for the active `TutorialStep`. Used by `AppSettingsView`; generic enough to reuse elsewhere. |
 
 ## The WKWebView layer
 
