@@ -46,6 +46,13 @@ feed. So we keep the real home page and **swap the feed data underneath it.**
    home tab once after the first successful harvest so the (now cached) splice
    lands deterministically. The home tab **holds** its feed request until the
    edges arrive (`prefetchFavoriteEdges()` waiter, ~10s timeout).
+   `finishHarvest()` owns this reload exclusively (gated on
+   `didReloadHomeForFavorites`) — every caller that starts a harvest
+   (`applyFavoritesSelection()`, `reharvestAndReloadHome()`) must NOT also
+   reload home itself before the harvest completes: that reload would have no
+   favorites preload yet, races `finishHarvest()`'s real reload, and can
+   independently flip `favoritesFeedReady` on stale/wrong content — see
+   known-issues.md #4e.
 
 5. **Splice with lazy getters.** In the home tab, `installLazyRewrite()` (called
    from the patched `XMLHttpRequest.prototype.open`) installs **lazy getters** on
