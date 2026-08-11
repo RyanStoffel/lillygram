@@ -523,6 +523,40 @@ background.
 
 ---
 
+## 4d. Leaving comments via the back arrow reloads home (2026-08-11)
+
+**Requirement:** R4. **Status:** implemented, pending on-device confirmation.
+
+**Symptom (reported, issue #6).** Viewing a post's comments and leaving via
+the on-screen back arrow reloaded the home page instead of just returning to
+it — home is supposed to stay loaded (warm, no reload) the whole time.
+
+**Root cause.** `installCommentBackRouting()` already intercepted the click on
+comments' back-arrow control, but only called `e.preventDefault()` and then
+relied on Instagram's own click handler still being attached to run the
+actual (client-side, no-reload) close/back behavior. That assumption doesn't
+hold for the mobile full-page comments view, which can be a genuine
+server-rendered route with no client router listening on that control at all
+— `preventDefault()` alone then either does nothing (stuck on comments,
+unreported because it reads as "unresponsive," not "reload") or, if some
+*other* ancestor handler still performs a real navigation, produces exactly
+the reported full document reload.
+
+**The fix.** The handler now drives the transition itself instead of gambling
+on Instagram's own handler: `history.back()` (or `goToPath('/')` if there's no
+history to go back to), plus `e.stopPropagation()` so nothing else double-
+handles the same click. `history.back()` consumes the same-document history
+entry the comments view opened on and fires a `popstate` Instagram's own
+router listens to regardless of whether a click handler exists on this
+specific control — the identical no-reload mechanism the swipe-back fix
+(#4a / issue #3) already relies on.
+
+**Needs on-device confirmation**, both for the dialog and full-page comments
+variants, and that this doesn't fire on unrelated icons that happen to also
+carry `aria-label="Back"`.
+
+---
+
 ## 5. Sync custom (app) favorites → official Instagram Favorites list
 
 **Requirement:** R1. **Status:** two-way reconcile implemented and

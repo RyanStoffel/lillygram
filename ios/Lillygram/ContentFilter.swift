@@ -2305,8 +2305,26 @@ enum ContentFilter {
           const back = e.target.closest('svg[aria-label="Back"]') || control.querySelector('svg[aria-label="Back"]');
           if (!back) return;
           e.preventDefault();
+          e.stopPropagation();
           biLog('[comments] back captured path=' + location.pathname +
             ' tag=' + control.tagName + ' href=' + (control.getAttribute('href') || 'none'));
+          // Drive the same-document history transition ourselves instead of
+          // depending on Instagram's own click handler still being attached
+          // to this control. The mobile full-page comments view can be a
+          // genuine server-rendered route with no client router listening
+          // here at all -- preventDefault() alone then does nothing (stuck
+          // on comments) or, if some other ancestor handler still performs a
+          // real navigation, reloads the document (the reported bug: home
+          // reloads instead of staying loaded). history.back() consumes the
+          // same-document history entry comments opened on and fires a
+          // popstate Instagram's own router listens to regardless of
+          // whether its click handler ran -- the same no-reload mechanism
+          // already relied on for edge-swipe-back (issue #3).
+          if (history.length > 1) {
+            history.back();
+          } else {
+            goToPath('/');
+          }
         }, true);
       }
 
