@@ -1,0 +1,70 @@
+name: Add External Tester
+run-name: Add external tester ${{ inputs.email }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: Email address to add as an external TestFlight tester
+        required: true
+        type: string
+      group_name:
+        description: External beta group name (created if it doesn't exist)
+        required: false
+        type: string
+        default: External Testers
+
+permissions:
+  contents: read
+
+jobs:
+  add-tester:
+    name: Add external tester
+    runs-on: macos-26
+    timeout-minutes: 10
+    environment: testflight
+    env:
+      ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      ASC_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+      ASC_APP_ID: ${{ vars.APP_STORE_CONNECT_APP_ID }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Validate deployment configuration
+        run: |
+          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY ASC_APP_ID; do
+            if test -z "${!name}"; then
+              echo "Missing required App Store Connect configuration: $name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Prepare App Store Connect credentials
+        id: credentials
+        run: |
+          key_path="$HOME/.private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          mkdir -p "$(dirname "$key_path")"
+          printf '%s' "$ASC_PRIVATE_KEY" > "$key_path"
+          chmod 600 "$key_path"
+          echo "key_path=$key_path" >> "$GITHUB_OUTPUT"
+
+      - name: Add external tester
+        run: |
+          python3 -m venv "$RUNNER_TEMP/asc-venv"
+          "$RUNNER_TEMP/asc-venv/bin/pip" install --quiet 'PyJWT[crypto]'
+          "$RUNNER_TEMP/asc-venv/bin/python" tools/add-external-tester.py \
+            --key-id "$ASC_KEY_ID" \
+            --issuer-id "$ASC_ISSUER_ID" \
+            --key-path "${{ steps.credentials.outputs.key_path }}" \
+            --app-id "$ASC_APP_ID" \
+            --email "${{ inputs.email }}" \
+            --group-name "${{ inputs.group_name }}"
+
+      - name: Remove private key
+        if: always()
+        run: |
+          rm -f "${{ steps.credentials.outputs.key_path }}"
+          rmdir "$HOME/.private_keys" 2>/dev/null || true
