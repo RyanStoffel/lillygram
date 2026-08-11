@@ -17,6 +17,7 @@
 		DB7EF95380B463411CE0062A /* WebBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 266440E90330CCEA275EEA69 /* WebBridge.swift */; };
 		A1B2C3D4E5F60718293A4B5C /* FavoritesStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5D /* FavoritesStore.swift */; };
 		A1B2C3D4E5F60718293A4B5E /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5F /* OnboardingView.swift */; };
+		A1B2C3D4E5F60718293A4B60 /* TutorialOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B61 /* TutorialOverlay.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +31,7 @@
 		F04D8A75CB872358306F2580 /* ContentFilter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentFilter.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A4B5D /* FavoritesStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesStore.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A4B5F /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718293A4B61 /* TutorialOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TutorialOverlay.swift; sourceTree = "<group>"; };
 		BB1CE5A1D9F14C2E8A73B002 /* BlockingRules.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = BlockingRules.json; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -46,6 +48,7 @@
 				266440E90330CCEA275EEA69 /* WebBridge.swift */,
 				A1B2C3D4E5F60718293A4B5D /* FavoritesStore.swift */,
 				A1B2C3D4E5F60718293A4B5F /* OnboardingView.swift */,
+				A1B2C3D4E5F60718293A4B61 /* TutorialOverlay.swift */,
 				BB1CE5A1D9F14C2E8A73B002 /* BlockingRules.json */,
 			);
 			path = Lillygram;
@@ -148,6 +151,7 @@
 				DB7EF95380B463411CE0062A /* WebBridge.swift in Sources */,
 				A1B2C3D4E5F60718293A4B5C /* FavoritesStore.swift in Sources */,
 				A1B2C3D4E5F60718293A4B5E /* OnboardingView.swift in Sources */,
+				A1B2C3D4E5F60718293A4B60 /* TutorialOverlay.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -168,7 +172,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.3.1;
+				MARKETING_VERSION = 0.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lillygram.app;
 				PRODUCT_NAME = Lillygram;
 				SDKROOT = iphoneos;
@@ -310,7 +314,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.3.1;
+				MARKETING_VERSION = 0.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lillygram.app;
 				PRODUCT_NAME = Lillygram;
 				SDKROOT = iphoneos;

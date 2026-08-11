@@ -14,6 +14,7 @@ struct FavoriteProfile: Codable, Identifiable, Hashable {
 final class FavoritesStore: ObservableObject {
     private static let favoritesKey = "bi.favoriteProfiles"
     private static let onboardedKey = "bi.onboardingCompleted"
+    private static let tutorialSeenKey = "bi.preferencesTutorialSeen"
 
     @Published var favorites: [FavoriteProfile] {
         didSet {
@@ -25,6 +26,12 @@ final class FavoritesStore: ObservableObject {
 
     @Published var hasCompletedOnboarding: Bool {
         didSet { UserDefaults.standard.set(hasCompletedOnboarding, forKey: Self.onboardedKey) }
+    }
+
+    /// Whether the user has finished (or skipped) the interactive
+    /// "preferences" walkthrough at least once — see `AppSettingsView`.
+    @Published var hasSeenPreferencesTutorial: Bool {
+        didSet { UserDefaults.standard.set(hasSeenPreferencesTutorial, forKey: Self.tutorialSeenKey) }
     }
 
     /// Skipping onboarding (or emptying the list) disables the favorites
@@ -39,5 +46,6 @@ final class FavoritesStore: ObservableObject {
             favorites = []
         }
         hasCompletedOnboarding = UserDefaults.standard.bool(forKey: Self.onboardedKey)
+        hasSeenPreferencesTutorial = UserDefaults.standard.bool(forKey: Self.tutorialSeenKey)
     }
 }

@@ -65,7 +65,7 @@ struct FavoritesPickerView: View {
             }
         }
         .sheet(isPresented: $showSettings) {
-            AppSettingsView()
+            AppSettingsView(favoritesStore: favoritesStore)
         }
         // The presenting view tints everything .primary (white in dark mode),
         // which would make the prominent Save button white-on-white.
@@ -313,7 +313,27 @@ struct FavoritesPickerView: View {
 /// Settings and support sheet for bug reporting and legal terms.
 struct AppSettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject var favoritesStore: FavoritesStore
     @State private var showBugReport = false
+    @State private var isTutorialActive = false
+
+    private static let tutorialSteps: [TutorialStep] = [
+        TutorialStep(
+            id: "bug",
+            title: "Something broken? Report it.",
+            message: "Lillygram is in beta, so rough edges happen. Tap \u{201c}Report a Bug\u{201d} anytime and it goes straight to Ryan\u{2019}s tracker."
+        ),
+        TutorialStep(
+            id: "beta",
+            title: "You\u{2019}re running a beta build",
+            message: "Instagram changes often, and Lillygram has to keep up. Expect occasional hiccups \u{2014} reporting them here is what keeps it working."
+        ),
+        TutorialStep(
+            id: "tour",
+            title: "Come back anytime",
+            message: "Forget how this works? Tap \u{201c}Take the Tour\u{201d} here in Settings & Support to see this walkthrough again."
+        )
+    ]
 
     var body: some View {
         NavigationStack {
@@ -326,6 +346,15 @@ struct AppSettingsView: View {
                         Label("Report a Bug", systemImage: "ladybug")
                             .foregroundStyle(.primary)
                     }
+                    .tutorialTarget("bug")
+
+                    Button {
+                        startTutorial()
+                    } label: {
+                        Label("Take the Tour", systemImage: "sparkles")
+                            .foregroundStyle(.primary)
+                    }
+                    .tutorialTarget("tour")
                 }
 
                 Section("Legal") {
@@ -346,6 +375,17 @@ struct AppSettingsView: View {
                         Text(appVersionString)
                             .foregroundStyle(.secondary)
                     }
+                    HStack {
+                        Text("Status")
+                        Spacer()
+                        Text("Beta")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.pink, in: .capsule)
+                    }
+                    .tutorialTarget("beta")
                 }
             }
             .navigationTitle("Settings & Support")
@@ -361,6 +401,20 @@ struct AppSettingsView: View {
                 BugReportView()
             }
         }
+        .tutorialOverlay(steps: Self.tutorialSteps, isActive: $isTutorialActive) {
+            favoritesStore.hasSeenPreferencesTutorial = true
+        }
+        .onAppear {
+            guard !favoritesStore.hasSeenPreferencesTutorial else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                startTutorial()
+            }
+        }
+    }
+
+    private func startTutorial() {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        isTutorialActive = true
     }
 }
 

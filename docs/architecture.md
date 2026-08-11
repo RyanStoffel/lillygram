@@ -26,10 +26,11 @@ and `evaluateJavaScript` / `callAsyncJavaScript`.
 | `WebViewStore.swift` | Owns the 4 tab webviews (home eager; others created via `ensureWebView(for:)`, called for all three during the launch splash by `ContentView.preloadSecondaryTabs()` — see architecture note below) + the disposable harvest webview; the shared `WKUserContentController`; login detection; favorites sync/harvest; navigation reason/id tracing; visibility-aware bottom clearance; and the home `UIRefreshControl` phase machine. The native brain. |
 | `ContentFilter.swift` | **The injected userscript**, as a Swift multiline string (`ContentFilter.script`), plus `harvestScript`. All web-side behavior lives here. |
 | `WebBridge.swift` | `NavTarget` enum (`home/search/direct/profile`) + `@Published` UI state (`isNavVisible`, `avatarURL`, `pageBackground`, `favoritesEditRequests`). |
-| `FavoritesStore.swift` | `UserDefaults`-backed favorites selection + onboarding-complete flag; `isFilterEnabled`. |
-| `OnboardingView.swift` | `FavoritesPickerView` — post-login onboarding + the star-tab editor; lists the user's following + global search. |
+| `FavoritesStore.swift` | `UserDefaults`-backed favorites selection + onboarding-complete flag + preferences-tutorial-seen flag; `isFilterEnabled`. |
+| `OnboardingView.swift` | `FavoritesPickerView` — post-login onboarding + the star-tab editor; lists the user's following + global search. Also `AppSettingsView` (Settings & Support, reached via the editor's gearshape) and `BugReportView`. `AppSettingsView` auto-runs the `TutorialOverlay` coach-mark walkthrough the first time it opens (persisted via `FavoritesStore.hasSeenPreferencesTutorial`) and exposes a "Take the Tour" row to replay it. |
 | `WKWebView+NoAccessory.swift` | Removes the keyboard input-accessory bar. |
 | `BlockingRules.json` | Bundled `WKContentRuleList` source — a single static `css-display-none` rule for the Explore/Reels nav chrome, compiled by `WebViewStore.compileContentRuleList()`. Additive defense-in-depth; the equivalent JS/CSS hides stay in `ContentFilter.swift`. |
+| `TutorialOverlay.swift` | Reusable coach-mark system: `.tutorialTarget(id)` tags a view's frame via an `Anchor<CGRect>` preference; `.tutorialOverlay(steps:isActive:onFinish:)` drives a blurred/dimmed spotlight + callout card (Skip/Next) over the tagged target for the active `TutorialStep`. Used by `AppSettingsView`; generic enough to reuse elsewhere. |
 
 ## The WKWebView layer
 

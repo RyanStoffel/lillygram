@@ -4,6 +4,16 @@ All notable changes to this project are documented here. Releases use the Xcode
 `MARKETING_VERSION`; CI assigns TestFlight build numbers from the released
 commit count and workflow attempt.
 
+## [0.4.0] — 2026-08-10
+
+### Added
+- Interactive coach-mark tutorial for Settings & Support: on first open it
+  spotlights "Report a Bug" and the new beta status row against a
+  blurred/dimmed backdrop, explaining that the app is in beta and how to
+  report issues. Replayable anytime via a new "Take the Tour" row.
+- Beta status badge in Settings & Support's About section.
+- Placeholder app icon: pink background with a bold white "L".
+
 ## [0.3.1] — 2026-08-10
 
 ### Fixed

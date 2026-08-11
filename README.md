@@ -8,7 +8,7 @@ Instagram that still feels like the native app, minus the parts engineered to
 keep you scrolling.** No private/native Instagram API, no jailbreak — the
 same category of technique as a browser content blocker or userscript.
 
-Current version: **0.3.1**. Pre-release; distributed to a small tester group
+Current version: **0.4.0**. Pre-release; distributed to a small tester group
 through TestFlight (see [Status & known limitations](#status--known-limitations)).
 
 ## Inspiration
