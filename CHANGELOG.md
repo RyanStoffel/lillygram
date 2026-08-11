@@ -4,6 +4,28 @@ All notable changes to this project are documented here. Releases use the Xcode
 `MARKETING_VERSION`; CI assigns TestFlight build numbers from the released
 commit count and workflow attempt.
 
+## [0.4.2] — 2026-08-11
+
+### Fixed
+- Preferences (star) button could disappear from the home header and never
+  come back if a header-geometry check missed on a transient scroll/animation
+  state. Button (re)attachment no longer depends on that check succeeding.
+- Native top/bottom safe area was never actually forced to black for Stories
+  and Reels (the `immersive` flag was tracked but never applied), and a
+  background-color sampler kept running during an open viewer and could
+  overwrite whatever color was showing with the viewer's own transient chrome
+  color. Safe area now reliably pins to black while a Story/Reel viewer is
+  open and restores the correct page color when it closes.
+- Leaving a post's comments via the on-screen back arrow could reload the
+  home page instead of returning to it. The back-arrow handler now drives the
+  same-document history transition itself instead of depending on
+  Instagram's own click handler still being attached.
+- Saving a favorites change showed the update splash, dropped it onto stale
+  content, then popped it back up before finally showing the correct
+  favorites — caused by an extra, redundant home reload racing the real
+  post-harvest reload. Removed the redundant reload so there's exactly one
+  splash cycle per save.
+
 ## [0.4.1] — 2026-08-10
 
 ### Fixed
