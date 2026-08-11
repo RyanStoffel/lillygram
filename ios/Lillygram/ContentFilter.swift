@@ -2090,6 +2090,53 @@ enum ContentFilter {
       // Home header: center the Instagram logo and add a favorites star on
       // the left (plus/heart stay on the right where IG puts them). The star
       // opens the native favorites editor via the biFavEdit message.
+      // The star control button must persist even on a pass where the
+      // stricter header-geometry walk below fails to find a header (a
+      // transient compact/sticky scroll variant, an in-flight animation,
+      // or any other momentary layout state). Previously fixHomeHeader()
+      // returned early before ever reaching the button-injection check when
+      // that happened, so a header remount (React replacing the header
+      // node, taking a previously-injected button with it) followed by one
+      // failed geometry pass left the button gone until geometry happened
+      // to match again — sometimes never, on that page view. Decoupling
+      // button (re)attachment from that walk fixes the "preferences button
+      // sometimes disappears" report (issue #4).
+      function ensureStarButton(container) {
+        if (!container) return;
+        const existing = document.getElementById('__bi_star_btn');
+        if (existing && container.contains(existing)) return;
+        if (existing) existing.remove();
+        const starButton = document.createElement('button');
+        starButton.id = '__bi_star_btn';
+        starButton.setAttribute('type', 'button');
+        starButton.setAttribute('aria-label', 'Lillygram Controls');
+        starButton.innerHTML = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" ' +
+          'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
+          '<line x1="4" y1="21" x2="4" y2="14"></line>' +
+          '<line x1="4" y1="10" x2="4" y2="3"></line>' +
+          '<line x1="12" y1="21" x2="12" y2="12"></line>' +
+          '<line x1="12" y1="8" x2="12" y2="3"></line>' +
+          '<line x1="20" y1="21" x2="20" y2="16"></line>' +
+          '<line x1="20" y1="12" x2="20" y2="3"></line>' +
+          '<line x1="1" y1="14" x2="7" y2="14"></line>' +
+          '<line x1="9" y1="8" x2="15" y2="8"></line>' +
+          '<line x1="17" y1="16" x2="23" y2="16"></line></svg>';
+        const logo = document.querySelector('svg[aria-label="Instagram"]');
+        try { if (logo) starButton.style.color = getComputedStyle(logo).color || 'inherit'; } catch (e) {}
+        starButton.addEventListener('click', function(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.biFavEdit) {
+            window.webkit.messageHandlers.biFavEdit.postMessage(true);
+          }
+        });
+        container.appendChild(starButton);
+        if (!window.__biHeaderFixLogged) {
+          window.__biHeaderFixLogged = true;
+          biLog('[header] control button injected');
+        }
+      }
+
       function fixHomeHeader() {
         if (location.pathname !== '/' || !isTopFrame) return;
         const logo = document.querySelector('svg[aria-label="Instagram"]');
@@ -2104,7 +2151,13 @@ enum ContentFilter {
           header = header.parentElement;
           depth++;
         }
-        if (!header || header === document.body) return;
+        const validHeader = header && header !== document.body ? header : null;
+        // Always try to (re)attach the star button to *some* reasonable
+        // header container, even when the stricter geometry walk above
+        // missed this pass — see ensureStarButton().
+        ensureStarButton(validHeader || logo.closest('header') || logo.parentElement);
+        if (!validHeader) return;
+        header = validHeader;
         if (getComputedStyle(header).position === 'static') header.style.position = 'relative';
 
         // The logo lives inside a small clickable control. IG sometimes renders
@@ -2160,36 +2213,6 @@ enum ContentFilter {
           }
         }
 
-        if (!document.getElementById('__bi_star_btn')) {
-          const starButton = document.createElement('button');
-          starButton.id = '__bi_star_btn';
-          starButton.setAttribute('type', 'button');
-          starButton.setAttribute('aria-label', 'Lillygram Controls');
-          starButton.innerHTML = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" ' +
-            'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
-            '<line x1="4" y1="21" x2="4" y2="14"></line>' +
-            '<line x1="4" y1="10" x2="4" y2="3"></line>' +
-            '<line x1="12" y1="21" x2="12" y2="12"></line>' +
-            '<line x1="12" y1="8" x2="12" y2="3"></line>' +
-            '<line x1="20" y1="21" x2="20" y2="16"></line>' +
-            '<line x1="20" y1="12" x2="20" y2="3"></line>' +
-            '<line x1="1" y1="14" x2="7" y2="14"></line>' +
-            '<line x1="9" y1="8" x2="15" y2="8"></line>' +
-            '<line x1="17" y1="16" x2="23" y2="16"></line></svg>';
-          try { starButton.style.color = getComputedStyle(logo).color || 'inherit'; } catch (e) {}
-          starButton.addEventListener('click', function(e) {
-            e.preventDefault();
-            e.stopPropagation();
-            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.biFavEdit) {
-              window.webkit.messageHandlers.biFavEdit.postMessage(true);
-            }
-          });
-          header.appendChild(starButton);
-          if (!window.__biHeaderFixLogged) {
-            window.__biHeaderFixLogged = true;
-            biLog('[header] control button injected depth=' + depth);
-          }
-        }
       }
 
       function removeReservedNavSpace() {

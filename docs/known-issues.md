@@ -446,6 +446,40 @@ near the screen edges (e.g. a DM message swipe-to-reply).
 
 ---
 
+## 4b. Preferences (star) button disappearing intermittently (2026-08-11)
+
+**Requirement:** R4. **Status:** implemented, pending on-device confirmation.
+
+**Symptom (reported, issue #4).** The injected star control button ("Lillygram
+Controls", top-left of the home header) sometimes disappears and does not come
+back.
+
+**Root cause.** `fixHomeHeader()` found its header container via a strict
+bounding-rect walk (width ≥ 90% viewport, 0 < height < 150, no nested
+`<article>`) up to 12 ancestors from the logo, and the star-button
+(re)injection check lived *after* that walk, inside the same early-return
+guard. Any single pass where the walk failed to match — a transient
+compact/sticky header variant, an in-flight header animation, or any other
+momentary layout state — bailed out of `fixHomeHeader()` entirely before ever
+reaching the button check. If Instagram had also remounted the header element
+itself around the same time (removing the previously-injected button along
+with the old node), the button was never reattached until a later pass
+happened to satisfy the strict geometry again — sometimes never, for the rest
+of that page view.
+
+**The fix.** Split button (re)attachment into its own `ensureStarButton()`,
+called unconditionally on every `fixHomeHeader()` pass with either the
+strictly-matched header or a permissive fallback (`logo.closest('header')` /
+the logo's parent) when the strict walk misses. The logo-centering/caret-hiding
+work (which genuinely needs the strict geometry to avoid mis-centering) still
+returns early on a miss, but no longer takes the star button down with it.
+
+**Needs on-device confirmation** across a scroll-heavy session (the scroll-
+triggered compact header variant is the most likely trigger for the geometry
+walk to miss).
+
+---
+
 ## 5. Sync custom (app) favorites → official Instagram Favorites list
 
 **Requirement:** R1. **Status:** two-way reconcile implemented and
