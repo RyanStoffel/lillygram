@@ -323,7 +323,9 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         let base = pageBackgroundCache[identifier] ?? Color(.systemBackground)
         bridge.isNavVisible = navVisibleCache[identifier] ?? true
         bridge.pageBackground = base
-        bridge.safeAreaBackground = base
+        // Stories/reels always use black for the safe area, regardless of
+        // which page's own reported color is cached — see setPresentation().
+        bridge.safeAreaBackground = (immersiveCache[identifier] ?? false) ? .black : base
     }
 
     private func updateBottomClearance(for webView: WKWebView, navVisible: Bool) {
@@ -430,8 +432,12 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         scrollLockedCache[identifier] = locked
         webView.scrollView.isScrollEnabled = !locked
         guard webView === webViews[activeTarget] else { return }
+        // Stories and confirmed reel viewers always use black; closing
+        // restores the cached base page color instead of a fresh DOM
+        // sample, so this never races reportBackgroundColor() (see biBg
+        // handling below and known-issues.md #5).
         let base = pageBackgroundCache[identifier] ?? Color(.systemBackground)
-        bridge.safeAreaBackground = base
+        bridge.safeAreaBackground = immersive ? .black : base
     }
 
     // MARK: - Favorites
@@ -1715,9 +1721,16 @@ final class WebViewStore: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                     if let source {
                         self.pageBackgroundCache[ObjectIdentifier(source)] = color
                     }
-                    if source === self.webViews[self.activeTarget] {
+                    if let source, source === self.webViews[self.activeTarget] {
                         self.bridge.pageBackground = color
-                        self.bridge.safeAreaBackground = color
+                        // Defensive backstop: never let a background sample
+                        // stomp the immersive black safe-area override (see
+                        // setPresentation()). reportBackgroundColor() also
+                        // skips sampling while immersive, but a message can
+                        // still be in flight when that state flips.
+                        if !(self.immersiveCache[ObjectIdentifier(source)] ?? false) {
+                            self.bridge.safeAreaBackground = color
+                        }
                     }
                 }
             }

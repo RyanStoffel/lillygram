@@ -2540,6 +2540,14 @@ enum ContentFilter {
 
       function reportBackgroundColor() {
         if (!isTopFrame) return;
+        // Must pause while a Story/Reel viewer is open: this samples the
+        // page's OWN composited colors (which can legitimately include
+        // transient white progress-bar/control chrome), unrelated to the
+        // black immersive safe-area override postPresentation() applies —
+        // without this gate the two race, and the sample periodically stomps
+        // the black override back to whatever the viewer's chrome happens to
+        // read as. See known-issues.md #5.
+        if (isImmersiveSurface(shouldLockScroll())) return;
         const bg = currentPageBackground() || defaultPageColor();
         if (!bg) return;
         if (window.__biLastBg !== bg) {
