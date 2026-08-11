@@ -480,6 +480,49 @@ walk to miss).
 
 ---
 
+## 4c. Safe area not black for Stories/Reels, occasionally wrong color otherwise (2026-08-11)
+
+**Requirement:** R4. **Status:** implemented, pending on-device confirmation.
+
+**Symptom (reported, issue #5).** The native top/bottom safe-area painter was
+buggy: it should always show the same color as the current page's main
+background — except pure black for Stories/Reels — but instead the safe area
+sometimes turned white on the home page (most noticeably around opening a
+Story), and did not reliably match on other screens.
+
+**Root cause.** `WebBridge.safeAreaBackground` is meant to be pinned to black
+while `biPresentation` reports an immersive Story/Reel viewer (per
+`architecture.md`'s own description of the intended design), but
+`WebViewStore.setPresentation(locked:immersive:for:)` never actually read its
+`immersive` parameter when setting the safe-area color — it always used the
+cached page background, `immersive` was only ever stored into `immersiveCache`
+for later (unrelated) reads. The same gap existed in
+`publishCachedPresentation(for:)` (used on tab switch). Compounding it: the
+web-side `reportBackgroundColor()` ran on every `apply()` pass unconditionally
+— including while a Story/Reel viewer was open — sampling the *viewer's own*
+composited colors (which can include transient white progress-bar/control
+chrome) and posting them as `biBg`, which the native handler applied straight
+to `safeAreaBackground` with no immersive guard. In light mode, opening a
+Story on home (cached base color = white) reproduces exactly the reported
+symptom: a white safe area where black is required.
+
+**The fix.** `setPresentation()` and `publishCachedPresentation()` now set
+`bridge.safeAreaBackground = .black` whenever the relevant webview is
+immersive, falling back to the cached base color otherwise.
+`reportBackgroundColor()` (`ContentFilter.swift`) now returns early while
+`isImmersiveSurface(shouldLockScroll())` is true, so it stops sampling/posting
+`biBg` for the duration of the viewer instead of racing the black override.
+The native `biBg` handler also gained a defensive check against
+`immersiveCache` so a message already in flight when immersive state flips
+can't slip through either.
+
+**Needs on-device confirmation**, particularly: opening/closing Stories and DM
+reels in both light and dark mode, and switching tabs to Search/Direct/Profile
+to confirm each one's own safe-area color matches that page's actual
+background.
+
+---
+
 ## 5. Sync custom (app) favorites → official Instagram Favorites list
 
 **Requirement:** R1. **Status:** two-way reconcile implemented and
