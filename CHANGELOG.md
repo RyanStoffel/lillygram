@@ -4,6 +4,20 @@ All notable changes to this project are documented here. Releases use the Xcode
 `MARKETING_VERSION`; CI assigns TestFlight build numbers from the released
 commit count and workflow attempt.
 
+## [0.6.0] - 2026-08-21
+
+### Added
+- Explicit one-shot **Request One SMS Code** flow when Instagram advertises SMS
+  for the current two-factor challenge.
+- Passwordless SMS verification against the exact pending challenge, avoiding a
+  second password login that could invalidate or replace the code context.
+
+### Security
+- Persists only the minimal SMS challenge identifier/context, Fernet-encrypted
+  with a ten-minute expiry. Passwords and codes are never persisted.
+- Rejects duplicate SMS requests while one context is pending and counts both
+  requesting and verifying against the per-account login-attempt limit.
+
 ## [0.5.2] - 2026-08-21
 
 ### Fixed

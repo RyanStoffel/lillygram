@@ -22,6 +22,8 @@ from .models import (
     Profile,
     ProfileSummary,
     ProxySettings,
+    SMSRequest,
+    SMSVerification,
     StoryTray,
     UploadResponse,
 )
@@ -49,7 +51,7 @@ def create_app(
 
     app = FastAPI(
         title="Lillygram Backend",
-        version="0.5.2",
+        version="0.6.0",
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
@@ -88,6 +90,20 @@ def create_app(
     @app.post("/v1/auth/login", response_model=LoginResponse)
     async def login(request: LoginRequest) -> LoginResponse:
         return await account_service.login(request)
+
+    @app.post("/v1/auth/request-sms", response_model=Account)
+    async def request_sms(
+        request: SMSRequest,
+        account: Annotated[AccountRecord, Depends(current_account)],
+    ) -> Account:
+        return await account_service.request_sms(account, request.password)
+
+    @app.post("/v1/auth/verify-sms", response_model=Account)
+    async def verify_sms(
+        request: SMSVerification,
+        account: Annotated[AccountRecord, Depends(current_account)],
+    ) -> Account:
+        return await account_service.verify_sms(account, request.code)
 
     @app.get("/v1/session", response_model=Account)
     async def session(

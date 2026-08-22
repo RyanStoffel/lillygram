@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -26,6 +26,9 @@ class AccountRecord:
     token_hash: str
     proxy_url: str | None
     challenge_message: str | None
+    verification_method: str | None
+    verification_context: dict[str, Any] | None
+    verification_expires_at: datetime | None
 
 
 class StorageError(RuntimeError):
@@ -63,7 +66,10 @@ class AccountStorage:
                     settings_blob BLOB NOT NULL,
                     token_hash TEXT NOT NULL UNIQUE,
                     proxy_blob BLOB,
-                    challenge_message TEXT
+                    challenge_message TEXT,
+                    verification_method TEXT,
+                    verification_blob BLOB,
+                    verification_expires_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS request_events (
                     account_id TEXT NOT NULL,
@@ -75,6 +81,22 @@ class AccountStorage:
                     ON request_events(account_id, category, created_at);
                 """
             )
+            columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(accounts)")
+            }
+            if "verification_method" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE accounts ADD COLUMN verification_method TEXT"
+                )
+            if "verification_blob" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE accounts ADD COLUMN verification_blob BLOB"
+                )
+            if "verification_expires_at" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE accounts ADD COLUMN verification_expires_at TEXT"
+                )
 
     @staticmethod
     def token_hash(token: str) -> str:
@@ -112,7 +134,7 @@ class AccountStorage:
     def get_or_create_account(
         self,
         username: str,
-        settings_factory: callable,
+        settings_factory: Callable[[], dict[str, Any]],
         proxy_url: str | None,
     ) -> tuple[AccountRecord, str | None]:
         existing = self.get_by_username(username)
@@ -168,10 +190,41 @@ class AccountStorage:
             self._connection.execute(
                 """
                 UPDATE accounts
-                SET settings_blob = ?, status = ?, challenge_message = ?
+                SET settings_blob = ?, status = ?, challenge_message = ?,
+                    verification_method = NULL, verification_blob = NULL,
+                    verification_expires_at = NULL
                 WHERE id = ?
                 """,
                 (self._encrypt_json(settings), status.value, challenge_message, account_id),
+            )
+
+    def save_verification(
+        self,
+        account_id: str,
+        settings: dict[str, Any],
+        method: str,
+        challenge_message: str,
+        context: dict[str, Any] | None = None,
+        expires_at: datetime | None = None,
+    ) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                UPDATE accounts
+                SET settings_blob = ?, status = ?, challenge_message = ?,
+                    verification_method = ?, verification_blob = ?,
+                    verification_expires_at = ?
+                WHERE id = ?
+                """,
+                (
+                    self._encrypt_json(settings),
+                    AccountStatus.VERIFICATION_REQUIRED.value,
+                    challenge_message,
+                    method,
+                    self._encrypt_json(context) if context else None,
+                    expires_at.isoformat() if expires_at else None,
+                    account_id,
+                ),
             )
 
     def set_status(
@@ -225,6 +278,12 @@ class AccountStorage:
             writes_enabled_at=record.created_at + timedelta(days=self._warmup_days),
             challenge_message=record.challenge_message,
             proxy_configured=record.proxy_url is not None,
+            verification_method=record.verification_method,
+            sms_pending=(
+                record.verification_context is not None
+                and record.verification_expires_at is not None
+                and record.verification_expires_at > datetime.now(UTC)
+            ),
         )
 
     def close(self) -> None:
@@ -235,6 +294,11 @@ class AccountStorage:
         try:
             settings = self._decrypt_json(row["settings_blob"])
             proxy_url = self._decrypt_text(row["proxy_blob"])
+            verification_context = (
+                self._decrypt_json(row["verification_blob"])
+                if row["verification_blob"]
+                else None
+            )
         except InvalidToken as error:
             raise StorageError(
                 "Encrypted account data cannot be read with the configured key"
@@ -248,6 +312,13 @@ class AccountStorage:
             token_hash=row["token_hash"],
             proxy_url=proxy_url,
             challenge_message=row["challenge_message"],
+            verification_method=row["verification_method"],
+            verification_context=verification_context,
+            verification_expires_at=(
+                datetime.fromisoformat(row["verification_expires_at"])
+                if row["verification_expires_at"]
+                else None
+            ),
         )
 
     def _encrypt_json(self, value: dict[str, Any]) -> bytes:

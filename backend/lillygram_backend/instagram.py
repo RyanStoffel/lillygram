@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import uuid4
 
 from .models import (
     DirectMessage,
@@ -37,6 +38,10 @@ class InstagramRejected(RuntimeError):
 class InstagramClient(Protocol):
     def settings(self) -> dict[str, Any]: ...
     def login(self, username: str, password: str, verification_code: str | None) -> None: ...
+    def request_sms(self, username: str, password: str) -> dict[str, Any] | None: ...
+    def verify_sms(
+        self, username: str, context: dict[str, Any], code: str
+    ) -> None: ...
     def timeline(self, cursor: str | None) -> tuple[list[Media], str | None]: ...
     def stories(self) -> list[StoryTray]: ...
     def search_accounts(self, query: str, amount: int) -> list[ProfileSummary]: ...
@@ -96,6 +101,114 @@ class InstagrapiClient:
             )
             if not logged_in:
                 raise InstagramRejected("Instagram rejected the login")
+        except Exception as error:
+            self._raise_mapped(error)
+
+    def request_sms(
+        self, username: str, password: str
+    ) -> dict[str, Any] | None:
+        try:
+            try:
+                if self._client.login(username, password, verification_code=""):
+                    return None
+                raise InstagramRejected("Instagram rejected the login")
+            except Exception as error:
+                if type(error).__name__ != "TwoFactorRequired":
+                    self._raise_mapped(error)
+
+            login_response = getattr(self._client, "last_json", None)
+            if not _nested_bool(login_response, "sms_two_factor_on"):
+                raise InstagramVerificationRequired(
+                    "Instagram did not offer SMS verification for this login",
+                    method=self._verification_method(),
+                )
+
+            bloks_context = _nested_value(
+                login_response, "two_step_verification_context"
+            )
+            if isinstance(bloks_context, str) and bloks_context:
+                self._client.bloks_two_step_verification_entrypoint(bloks_context)
+                self._client.bloks_two_step_verification_method_picker(bloks_context)
+                self._client.bloks_two_step_verification_select_method(
+                    bloks_context,
+                    selected_method="sms",
+                )
+                return {"kind": "bloks", "context": bloks_context}
+
+            identifier = _nested_value(login_response, "two_factor_identifier")
+            if identifier:
+                # Instagram's legacy two-factor login response triggers SMS
+                # delivery while returning this identifier.
+                return {"kind": "legacy", "identifier": str(identifier)}
+
+            raise InstagramVerificationRequired(
+                "Instagram did not return an SMS verification context",
+                method="sms",
+            )
+        except (
+            InstagramChallenge,
+            InstagramVerificationRequired,
+            InstagramReauthenticationRequired,
+            InstagramRejected,
+        ):
+            raise
+        except Exception as error:
+            self._raise_mapped(error)
+
+    def verify_sms(
+        self, username: str, context: dict[str, Any], code: str
+    ) -> None:
+        try:
+            self._client.username = username
+            kind = context.get("kind")
+            if kind == "bloks":
+                bloks_context = context.get("context")
+                if not isinstance(bloks_context, str) or not bloks_context:
+                    raise InstagramRejected("The SMS verification context is invalid")
+                result = self._client.bloks_two_step_verification_verify_code(
+                    bloks_context,
+                    code.strip(),
+                    challenge="sms",
+                )
+                logged_in = self._client.bloks_apply_login_response(result)
+            elif kind == "legacy":
+                identifier = context.get("identifier")
+                if not identifier:
+                    raise InstagramRejected("The SMS verification context is invalid")
+                data = {
+                    "verification_code": code.strip(),
+                    "phone_id": self._client.phone_id,
+                    "_csrftoken": self._client.token,
+                    "two_factor_identifier": identifier,
+                    "username": username,
+                    "trust_this_device": "0",
+                    "guid": self._client.uuid,
+                    "device_id": self._client.android_device_id,
+                    "waterfall_id": str(uuid4()),
+                    "verification_method": "3",
+                }
+                logged_in = self._client.private_request(
+                    "accounts/two_factor_login/",
+                    data,
+                    login=True,
+                )
+                if logged_in:
+                    self._client.authorization_data = self._client.parse_authorization(
+                        self._client.last_response.headers.get("ig-set-authorization")
+                    )
+            else:
+                raise InstagramRejected("The SMS verification context is invalid")
+
+            if not logged_in:
+                raise InstagramRejected("Instagram rejected the SMS code")
+            self._client.login_flow()
+        except (
+            InstagramChallenge,
+            InstagramVerificationRequired,
+            InstagramReauthenticationRequired,
+            InstagramRejected,
+        ):
+            raise
         except Exception as error:
             self._raise_mapped(error)
 
@@ -277,6 +390,22 @@ def _value(value: Any, key: str, default: Any = None) -> Any:
     if isinstance(value, dict):
         return value.get(key, default)
     return getattr(value, key, default)
+
+
+def _nested_value(value: Any, key: str) -> Any:
+    if isinstance(value, dict):
+        if key in value:
+            return value[key]
+        for child in value.values():
+            found = _nested_value(child, key)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _nested_value(child, key)
+            if found is not None:
+                return found
+    return None
 
 def _nested_bool(value: Any, key: str) -> bool:
     if isinstance(value, dict):

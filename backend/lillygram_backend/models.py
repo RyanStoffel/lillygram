@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AccountStatus(StrEnum):
@@ -21,6 +21,8 @@ class Account(BaseModel):
     writes_enabled_at: datetime
     challenge_message: str | None = None
     proxy_configured: bool = False
+    verification_method: str | None = None
+    sms_pending: bool = False
 
 
 class LoginRequest(BaseModel):
@@ -33,6 +35,13 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     token: str
     account: Account
+
+class SMSRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+
+
+class SMSVerification(BaseModel):
+    code: str = Field(min_length=4, max_length=16)
 
 
 class ProxySettings(BaseModel):

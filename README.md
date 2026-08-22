@@ -4,7 +4,7 @@ A fully native SwiftUI Instagram client focused on deliberate social use:
 favorites-only Home, Stories, posts, account search, profiles, and read-only DMs,
 with no Reel feed or Explore surface.
 
-Current version: **0.5.2**. Private beta; distributed through TestFlight to a
+Current version: **0.6.0**. Private beta; distributed through TestFlight to a
 small tester group.
 
 ## Product rules
@@ -33,6 +33,8 @@ imports `instagrapi` or communicates with Instagram's unofficial private API.
   settings. No live client state is shared across users.
 - Challenge or rejected-session states freeze only the affected account and are
   never retried silently.
+- SMS verification is an explicit one-shot action. Its minimal challenge
+  context is encrypted, expires after ten minutes, and is cleared on success.
 - New accounts are read-only for three days by default. Reads, writes, and login
   attempts have conservative rolling hourly limits and randomized pacing.
 - DMs are read-only. Replies open Instagram instead of using unofficial DM

@@ -74,6 +74,24 @@ actor APIClient {
         )
     }
 
+    func requestSMS(password: String) async throws -> Account {
+        struct Body: Encodable { let password: String }
+        return try await request(
+            path: "v1/auth/request-sms",
+            method: "POST",
+            body: Body(password: password)
+        )
+    }
+
+    func verifySMS(code: String) async throws -> Account {
+        struct Body: Encodable { let code: String }
+        return try await request(
+            path: "v1/auth/verify-sms",
+            method: "POST",
+            body: Body(code: code)
+        )
+    }
+
     func sessionAccount() async throws -> Account {
         try await request(path: "v1/session")
     }

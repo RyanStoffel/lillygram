@@ -76,6 +76,13 @@ stored sessions intentionally unreadable.
 6. `ChallengeRequired`, two-factor-required, `LoginRequired`, rate blocks, and
    related trust failures freeze only that account. The client presents the
    explicit verification or reconnect state.
+7. When Instagram explicitly offers SMS, the user may request it once. The
+   backend selects SMS in the current two-factor challenge and stores only the
+   minimal challenge identifier/context, Fernet-encrypted with a ten-minute
+   expiry. The password is never persisted.
+8. `/v1/auth/verify-sms` consumes that pending context and the user-entered code
+   without repeating password login. A second SMS request is rejected while the
+   first context remains valid.
 
 A fresh `instagrapi.Client` is constructed from one account's encrypted settings
 inside that account's `asyncio.Lock` for every operation. No live client,
@@ -89,6 +96,8 @@ accounts.
   hour. Operators can lower them with environment variables.
 - Reads wait a random 0.8 to 2.5 seconds; writes and logins wait a random 2 to 6
   seconds before the upstream request.
+- SMS request and verification both consume the durable login-attempt budget.
+  There are no automatic sends, resends, polling loops, or code retrieval.
 - New accounts are read-only for three days by default.
 - Feed, profile media, and messages are fetched one page at a time and only when
   their native surface is opened.
@@ -132,6 +141,8 @@ recommendation, autoplay chain, or Reel navigation surface.
 ## REST surface
 
 - `POST /v1/auth/login`
+- `POST /v1/auth/request-sms`
+- `POST /v1/auth/verify-sms`
 - `GET /v1/session`
 - `GET /v1/settings`
 - `PUT /v1/settings/proxy`

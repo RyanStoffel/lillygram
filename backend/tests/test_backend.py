@@ -12,6 +12,7 @@ from lillygram_backend.config import Settings
 from lillygram_backend.instagram import (
     InstagrapiClient,
     InstagramChallenge,
+    InstagramRejected,
     InstagramVerificationRequired,
 )
 from lillygram_backend.main import create_app
@@ -40,20 +41,37 @@ class FakeInstagramClient:
         self,
         settings: dict[str, Any],
         challenge_users: set[str],
+        sms_requests: list[tuple[str, str]],
+        sms_verifications: list[tuple[str, dict[str, Any], str]],
     ) -> None:
         self._settings = dict(settings)
         self._challenge_users = challenge_users
+        self._sms_requests = sms_requests
+        self._sms_verifications = sms_verifications
 
     def settings(self) -> dict[str, Any]:
         return dict(self._settings)
 
     def login(self, username: str, password: str, verification_code: str | None) -> None:
         if password != "correct horse":
-            from lillygram_backend.instagram import InstagramRejected
-
             raise InstagramRejected("bad password")
         self._settings["username"] = username
         self._settings["authorization_data"] = {"sessionid": f"session-{username}"}
+
+    def request_sms(self, username: str, password: str):
+        if password != "correct horse":
+            raise InstagramRejected("bad password")
+        self._sms_requests.append((username, password))
+        self._settings["username"] = username
+        return {"kind": "bloks", "context": "secret-sms-context"}
+
+    def verify_sms(self, username: str, context: dict[str, Any], code: str):
+        self._sms_verifications.append((username, context, code))
+        if code != "123456":
+            raise InstagramRejected("bad SMS code")
+        self._settings["authorization_data"] = {
+            "sessionid": f"session-{username}"
+        }
 
     def timeline(self, cursor: str | None):
         username = self._settings.get("username", "unknown")
@@ -93,12 +111,19 @@ class FakeInstagramFactory:
     def __init__(self) -> None:
         self.generated_devices = 0
         self.challenge_users: set[str] = set()
+        self.sms_requests: list[tuple[str, str]] = []
+        self.sms_verifications: list[tuple[str, dict[str, Any], str]] = []
 
     def new(self, settings=None, proxy_url=None):
         if settings is None:
             self.generated_devices += 1
             settings = {"device_id": f"device-{self.generated_devices}", "uuids": {}}
-        result = FakeInstagramClient(settings, self.challenge_users)
+        result = FakeInstagramClient(
+            settings,
+            self.challenge_users,
+            self.sms_requests,
+            self.sms_verifications,
+        )
         if proxy_url:
             result._settings["proxy"] = proxy_url
         return result
@@ -170,6 +195,42 @@ async def test_login_reuses_one_stable_device_identity(backend):
     ).fetchone()
     assert b"device-1" not in settings_blob
     assert b"secret" not in proxy_blob
+
+
+def test_storage_migrates_encrypted_sms_context_columns(tmp_path):
+    database_path = tmp_path / "legacy.sqlite3"
+    database = sqlite3.connect(database_path)
+    database.execute(
+        """
+        CREATE TABLE accounts (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            settings_blob BLOB NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            proxy_blob BLOB,
+            challenge_message TEXT
+        )
+        """
+    )
+    database.commit()
+    database.close()
+
+    storage = AccountStorage(database_path, Fernet.generate_key().decode(), 3)
+    migrated = sqlite3.connect(database_path)
+    columns = {
+        row[1]
+        for row in migrated.execute("PRAGMA table_info(accounts)").fetchall()
+    }
+    storage.close()
+    migrated.close()
+
+    assert {
+        "verification_method",
+        "verification_blob",
+        "verification_expires_at",
+    }.issubset(columns)
 
 
 @pytest.mark.asyncio
@@ -286,6 +347,71 @@ def test_failed_verification_never_echoes_or_mislabels_the_code(backend):
     assert submitted_code not in response.text
 
 
+def test_sms_flow_is_one_shot_encrypted_and_passwordless_at_verification(backend):
+    settings, storage, factory, service = backend
+    app = create_app(settings, storage=storage, service=service)
+
+    with TestClient(app) as client:
+        login = client.post(
+            "/v1/auth/login",
+            json={"username": "alice", "password": "correct horse"},
+        ).json()
+        token = login["token"]
+        account_id = login["account"]["id"]
+        record = storage.get_by_id(account_id)
+        storage.save_verification(
+            account_id,
+            record.settings,
+            "sms",
+            "SMS is available.",
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+
+        requested = client.post(
+            "/v1/auth/request-sms",
+            headers=headers,
+            json={"password": "correct horse"},
+        )
+        database = sqlite3.connect(storage._database_path)
+        pending_blob = database.execute(
+            "SELECT verification_blob FROM accounts WHERE id = ?",
+            (account_id,),
+        ).fetchone()[0]
+        assert b"secret-sms-context" not in pending_blob
+        repeated = client.post(
+            "/v1/auth/request-sms",
+            headers=headers,
+            json={"password": "correct horse"},
+        )
+        verified = client.post(
+            "/v1/auth/verify-sms",
+            headers=headers,
+            json={"code": "123456"},
+        )
+
+    assert requested.status_code == 200
+    assert requested.json()["verification_method"] == "sms"
+    assert requested.json()["sms_pending"] is True
+    assert repeated.status_code == 409
+    assert verified.status_code == 200
+    assert verified.json()["status"] == "active"
+    assert verified.json()["sms_pending"] is False
+    assert factory.sms_requests == [("alice", "correct horse")]
+    assert factory.sms_verifications == [
+        (
+            "alice",
+            {"kind": "bloks", "context": "secret-sms-context"},
+            "123456",
+        )
+    ]
+
+    verification_blob = database.execute(
+        "SELECT verification_blob FROM accounts WHERE id = ?",
+        (account_id,),
+    ).fetchone()[0]
+    assert verification_blob is None
+
+
 def test_instagrapi_boundary_paginates_and_filters_reels():
     class RawClient:
         search_count = None
@@ -367,6 +493,58 @@ def test_two_factor_method_is_classified_without_exposing_login_response(
         client.login("account", "password", None)
 
     assert raised.value.method == expected_method
+
+
+def test_instagrapi_sms_boundary_selects_and_verifies_one_context():
+    two_factor_error = type("TwoFactorRequired", (Exception,), {})
+
+    class RawClient:
+        last_json = {
+            "two_factor_info": {"sms_two_factor_on": True},
+            "two_step_verification_context": "bloks-context",
+        }
+        selected_methods: list[str] = []
+        verified: list[tuple[str, str, str]] = []
+        login_flow_calls = 0
+
+        def login(self, username, password, verification_code):
+            raise two_factor_error("two-factor required")
+
+        def bloks_two_step_verification_entrypoint(self, context):
+            assert context == "bloks-context"
+
+        def bloks_two_step_verification_method_picker(self, context):
+            assert context == "bloks-context"
+
+        def bloks_two_step_verification_select_method(
+            self, context, selected_method
+        ):
+            assert context == "bloks-context"
+            self.selected_methods.append(selected_method)
+
+        def bloks_two_step_verification_verify_code(
+            self, context, code, challenge
+        ):
+            self.verified.append((context, code, challenge))
+            return {"login": "response"}
+
+        def bloks_apply_login_response(self, result):
+            return result == {"login": "response"}
+
+        def login_flow(self):
+            self.login_flow_calls += 1
+
+    raw = RawClient()
+    client = object.__new__(InstagrapiClient)
+    client._client = raw
+
+    context = client.request_sms("account", "password")
+    client.verify_sms("account", context, "123456")
+
+    assert context == {"kind": "bloks", "context": "bloks-context"}
+    assert raw.selected_methods == ["sms"]
+    assert raw.verified == [("bloks-context", "123456", "sms")]
+    assert raw.login_flow_calls == 1
 
 
 def test_verification_copy_does_not_claim_totp_was_sent():

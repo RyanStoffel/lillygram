@@ -90,6 +90,36 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func requestSMS(password: String) async -> Bool {
+        guard !isSigningIn else { return false }
+        isSigningIn = true
+        errorMessage = nil
+        defer { isSigningIn = false }
+        do {
+            let updated = try await client().requestSMS(password: password)
+            applyAccount(updated)
+            return updated.smsPending || updated.status == .active
+        } catch {
+            await handleOperationError(error)
+            return false
+        }
+    }
+
+    func verifySMS(code: String) async -> Bool {
+        guard !isSigningIn else { return false }
+        isSigningIn = true
+        errorMessage = nil
+        defer { isSigningIn = false }
+        do {
+            let updated = try await client().verifySMS(code: code)
+            applyAccount(updated)
+            return updated.status == .active
+        } catch {
+            await handleOperationError(error)
+            return false
+        }
+    }
+
     func disconnect() {
         AppTokenStore.clear()
         token = nil

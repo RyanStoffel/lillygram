@@ -52,10 +52,11 @@ profile-media, DM, and upload response shapes before broader use.
 **Status:** by design.
 
 Two-factor login accepts one user-entered authenticator, SMS, or backup code.
-The backend classifies only the verification method and never stores the
-two-factor response. Lillygram cannot send, retrieve, or resend a code. Other
-challenges freeze that account and direct the user to Instagram; there are no
-automatic challenge loops or retries.
+When Instagram explicitly advertises SMS, Lillygram can select that method once
+and verify the resulting code against a minimal encrypted challenge context that
+expires after ten minutes. It cannot retrieve a code, resend while one is
+pending, or guarantee carrier delivery. Other challenges freeze that account
+and direct the user to Instagram; there are no automatic challenge loops.
 Verification and backup codes are masked in the native form and cleared after
 every submission. Treat any code shown in a screenshot, log, or chat as
 compromised and regenerate Instagram's backup-code set before retrying.

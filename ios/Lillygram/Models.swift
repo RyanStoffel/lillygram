@@ -15,6 +15,8 @@ struct Account: Codable, Identifiable, Equatable {
     let writesEnabledAt: Date
     let challengeMessage: String?
     let proxyConfigured: Bool
+    let verificationMethod: String?
+    let smsPending: Bool
 }
 
 struct LoginResponse: Codable {

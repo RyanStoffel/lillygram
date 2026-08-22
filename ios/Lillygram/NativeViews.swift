@@ -38,11 +38,26 @@ struct SignInView: View {
                     TextField("Username", text: $username)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    SecureField("Password", text: $password)
+                    if !smsPending {
+                        SecureField("Password", text: $password)
+                    }
                     if store.phase == .verificationRequired {
-                        SecureField("Verification code", text: $verificationCode)
-                            .keyboardType(.numberPad)
-                            .textContentType(.oneTimeCode)
+                        SecureField(
+                            smsPending ? "SMS code" : "Authenticator or backup code",
+                            text: $verificationCode
+                        )
+                        .keyboardType(.numberPad)
+                        .textContentType(.oneTimeCode)
+
+                        if !smsPending {
+                            Button("Request One SMS Code") {
+                                Task {
+                                    _ = await store.requestSMS(password: password)
+                                    password = ""
+                                }
+                            }
+                            .disabled(password.isEmpty || store.isSigningIn)
+                        }
                     }
                 }
 
@@ -67,13 +82,17 @@ struct SignInView: View {
                 Section {
                     Button {
                         Task {
-                            await store.signIn(
-                                serverURL: serverURL,
-                                username: username,
-                                password: password,
-                                verificationCode: verificationCode,
-                                proxyURL: proxyURL
-                            )
+                            if smsPending {
+                                _ = await store.verifySMS(code: verificationCode)
+                            } else {
+                                await store.signIn(
+                                    serverURL: serverURL,
+                                    username: username,
+                                    password: password,
+                                    verificationCode: verificationCode,
+                                    proxyURL: proxyURL
+                                )
+                            }
                             password = ""
                             verificationCode = ""
                             proxyURL = ""
@@ -89,7 +108,7 @@ struct SignInView: View {
                             Spacer()
                         }
                     }
-                    .disabled(serverURL.isEmpty || username.isEmpty || password.isEmpty || store.isSigningIn)
+                    .disabled(submitDisabled)
                 }
             }
             .scrollContentBackground(.hidden)
@@ -102,10 +121,26 @@ struct SignInView: View {
         .preferredColorScheme(.dark)
     }
 
+    private var smsPending: Bool {
+        store.account?.smsPending == true
+    }
+
+    private var submitDisabled: Bool {
+        if store.isSigningIn || serverURL.isEmpty || username.isEmpty {
+            return true
+        }
+        if store.phase == .verificationRequired {
+            return verificationCode.isEmpty || (!smsPending && password.isEmpty)
+        }
+        return password.isEmpty
+    }
+
     private var signInTitle: String {
         switch store.phase {
-        case .verificationRequired: "Submit Verification Code"
-        case .challengeRequired, .reauthRequired: "Reconnect Explicitly"
+        case .verificationRequired:
+            smsPending ? "Verify SMS Code" : "Submit Verification Code"
+        case .challengeRequired, .reauthRequired:
+            "Reconnect Explicitly"
         default: "Sign In"
         }
     }
