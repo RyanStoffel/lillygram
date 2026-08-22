@@ -105,6 +105,21 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func checkAppApproval(password: String) async -> Bool {
+        guard !isSigningIn else { return false }
+        isSigningIn = true
+        errorMessage = nil
+        defer { isSigningIn = false }
+        do {
+            let updated = try await client().checkAppApproval(password: password)
+            applyAccount(updated)
+            return updated.status == .active
+        } catch {
+            await handleOperationError(error)
+            return false
+        }
+    }
+
     func verifySMS(code: String) async -> Bool {
         guard !isSigningIn else { return false }
         isSigningIn = true

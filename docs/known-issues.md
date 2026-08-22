@@ -57,6 +57,9 @@ and verify the resulting code against a minimal encrypted challenge context that
 expires after ten minutes. It cannot retrieve a code, resend while one is
 pending, or guarantee carrier delivery. Other challenges freeze that account
 and direct the user to Instagram; there are no automatic challenge loops.
+Instagram may still issue an official-app approval prompt despite SMS fallback.
+Lillygram exposes a manual completion check for that prompt, but does not poll
+or automatically repeat the login.
 Verification and backup codes are masked in the native form and cleared after
 every submission. Treat any code shown in a screenshot, log, or chat as
 compromised and regenerate Instagram's backup-code set before retrying.

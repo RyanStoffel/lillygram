@@ -57,6 +57,25 @@ struct SignInView: View {
                                 }
                             }
                             .disabled(password.isEmpty || store.isSigningIn)
+                        } else {
+                            SecureField(
+                                "Password after Instagram approval",
+                                text: $password
+                            )
+                            Button("I Approved in Instagram") {
+                                Task {
+                                    _ = await store.checkAppApproval(
+                                        password: password
+                                    )
+                                    password = ""
+                                }
+                            }
+                            .disabled(password.isEmpty || store.isSigningIn)
+                            Text(
+                                "Use this only after approving the login request in the official Instagram app."
+                            )
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                         }
                     }
                 }

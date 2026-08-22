@@ -83,6 +83,9 @@ stored sessions intentionally unreadable.
 8. `/v1/auth/verify-sms` consumes that pending context and the user-entered code
    without repeating password login. A second SMS request is rejected while the
    first context remains valid.
+9. If Instagram still presents device approval, the user may approve it in the
+   official app and explicitly check once with their password. A still-pending
+   result preserves the encrypted SMS context instead of silently replacing it.
 
 A fresh `instagrapi.Client` is constructed from one account's encrypted settings
 inside that account's `asyncio.Lock` for every operation. No live client,
@@ -143,6 +146,7 @@ recommendation, autoplay chain, or Reel navigation surface.
 - `POST /v1/auth/login`
 - `POST /v1/auth/request-sms`
 - `POST /v1/auth/verify-sms`
+- `POST /v1/auth/check-approval`
 - `GET /v1/session`
 - `GET /v1/settings`
 - `PUT /v1/settings/proxy`

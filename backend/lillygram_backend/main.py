@@ -51,7 +51,7 @@ def create_app(
 
     app = FastAPI(
         title="Lillygram Backend",
-        version="0.6.0",
+        version="0.6.1",
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
@@ -97,6 +97,15 @@ def create_app(
         account: Annotated[AccountRecord, Depends(current_account)],
     ) -> Account:
         return await account_service.request_sms(account, request.password)
+
+    @app.post("/v1/auth/check-approval", response_model=Account)
+    async def check_approval(
+        request: SMSRequest,
+        account: Annotated[AccountRecord, Depends(current_account)],
+    ) -> Account:
+        return await account_service.check_app_approval(
+            account, request.password
+        )
 
     @app.post("/v1/auth/verify-sms", response_model=Account)
     async def verify_sms(

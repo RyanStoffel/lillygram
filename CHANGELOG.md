@@ -4,6 +4,15 @@ All notable changes to this project are documented here. Releases use the Xcode
 `MARKETING_VERSION`; CI assigns TestFlight build numbers from the released
 commit count and workflow attempt.
 
+## [0.6.1] - 2026-08-21
+
+### Fixed
+- Forces Instagram's Bloks two-factor flow into SMS fallback mode instead of
+  accepting its default official-app approval route when SMS was requested.
+- Adds an explicit **I Approved in Instagram** completion path. After approving
+  the transient request in the official app, users can check that approval once
+  without discarding the pending verification context.
+
 ## [0.6.0] - 2026-08-21
 
 ### Added

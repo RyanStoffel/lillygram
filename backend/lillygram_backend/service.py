@@ -268,6 +268,67 @@ class AccountService:
             updated = await asyncio.to_thread(self.storage.get_by_id, current.id)
             return self.storage.account_model(updated)
 
+    async def check_app_approval(
+        self, record: AccountRecord, password: str
+    ) -> Account:
+        lock = await self._lock_for(record.id)
+        async with lock:
+            current = await asyncio.to_thread(self.storage.get_by_id, record.id)
+            if current.status != AccountStatus.VERIFICATION_REQUIRED:
+                raise AccountUnavailable(
+                    "App approval can only be checked while verification is pending"
+                )
+            await self._enforce_login_limit(current)
+            await self._pace("write")
+            client = self.client_factory.new(current.settings, current.proxy_url)
+            try:
+                await asyncio.to_thread(
+                    client.login,
+                    current.username,
+                    password,
+                    None,
+                )
+            except InstagramVerificationRequired as error:
+                await asyncio.to_thread(
+                    self.storage.save_verification,
+                    current.id,
+                    client.settings(),
+                    error.method,
+                    "Instagram has not approved this login yet. Approve it in the official app, then check once more.",
+                    current.verification_context,
+                    current.verification_expires_at,
+                )
+                raise AccountUnavailable(
+                    "Instagram has not approved this login yet"
+                ) from error
+            except InstagramChallenge as error:
+                await asyncio.to_thread(
+                    self.storage.save_session,
+                    current.id,
+                    client.settings(),
+                    AccountStatus.CHALLENGE_REQUIRED,
+                    "Instagram requires another verification step in the official app.",
+                )
+                raise AccountUnavailable(
+                    "Instagram requires another verification step"
+                ) from error
+            except InstagramReauthenticationRequired as error:
+                raise AccountUnavailable("Instagram rejected the session") from error
+            except InstagramRejected as error:
+                raise Unauthorized(
+                    "Instagram rejected the password while checking app approval"
+                ) from error
+
+            await asyncio.to_thread(
+                self.storage.save_session,
+                current.id,
+                client.settings(),
+                AccountStatus.ACTIVE,
+                None,
+            )
+            updated = await asyncio.to_thread(self.storage.get_by_id, current.id)
+            return self.storage.account_model(updated)
+
     async def verify_sms(
         self, record: AccountRecord, code: str
     ) -> Account:

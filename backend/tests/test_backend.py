@@ -412,6 +412,42 @@ def test_sms_flow_is_one_shot_encrypted_and_passwordless_at_verification(backend
     assert verification_blob is None
 
 
+def test_official_app_approval_can_complete_a_pending_sms_login(backend):
+    settings, storage, _, service = backend
+    app = create_app(settings, storage=storage, service=service)
+
+    with TestClient(app) as client:
+        login = client.post(
+            "/v1/auth/login",
+            json={"username": "alice", "password": "correct horse"},
+        ).json()
+        account_id = login["account"]["id"]
+        record = storage.get_by_id(account_id)
+        storage.save_verification(
+            account_id,
+            record.settings,
+            "sms",
+            "SMS is available.",
+        )
+        headers = {"Authorization": f"Bearer {login['token']}"}
+        requested = client.post(
+            "/v1/auth/request-sms",
+            headers=headers,
+            json={"password": "correct horse"},
+        )
+        approved = client.post(
+            "/v1/auth/check-approval",
+            headers=headers,
+            json={"password": "correct horse"},
+        )
+
+    assert requested.status_code == 200
+    assert requested.json()["sms_pending"] is True
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "active"
+    assert approved.json()["sms_pending"] is False
+
+
 def test_instagrapi_boundary_paginates_and_filters_reels():
     class RawClient:
         search_count = None
@@ -510,21 +546,29 @@ def test_instagrapi_sms_boundary_selects_and_verifies_one_context():
         def login(self, username, password, verification_code):
             raise two_factor_error("two-factor required")
 
-        def bloks_two_step_verification_entrypoint(self, context):
-            assert context == "bloks-context"
-
-        def bloks_two_step_verification_method_picker(self, context):
-            assert context == "bloks-context"
-
-        def bloks_two_step_verification_select_method(
-            self, context, selected_method
+        def bloks_two_step_verification_entrypoint(
+            self, context, should_fallback_to_sms
         ):
             assert context == "bloks-context"
+            assert should_fallback_to_sms is True
+
+        def bloks_two_step_verification_method_picker(
+            self, context, should_fallback_to_sms
+        ):
+            assert context == "bloks-context"
+            assert should_fallback_to_sms is True
+
+        def bloks_two_step_verification_select_method(
+            self, context, selected_method, should_fallback_to_sms
+        ):
+            assert context == "bloks-context"
+            assert should_fallback_to_sms is True
             self.selected_methods.append(selected_method)
 
         def bloks_two_step_verification_verify_code(
-            self, context, code, challenge
+            self, context, code, challenge, should_fallback_to_sms
         ):
+            assert should_fallback_to_sms is True
             self.verified.append((context, code, challenge))
             return {"login": "response"}
 

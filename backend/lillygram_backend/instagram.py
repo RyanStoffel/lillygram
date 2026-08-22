@@ -127,11 +127,18 @@ class InstagrapiClient:
                 login_response, "two_step_verification_context"
             )
             if isinstance(bloks_context, str) and bloks_context:
-                self._client.bloks_two_step_verification_entrypoint(bloks_context)
-                self._client.bloks_two_step_verification_method_picker(bloks_context)
+                self._client.bloks_two_step_verification_entrypoint(
+                    bloks_context,
+                    should_fallback_to_sms=True,
+                )
+                self._client.bloks_two_step_verification_method_picker(
+                    bloks_context,
+                    should_fallback_to_sms=True,
+                )
                 self._client.bloks_two_step_verification_select_method(
                     bloks_context,
                     selected_method="sms",
+                    should_fallback_to_sms=True,
                 )
                 return {"kind": "bloks", "context": bloks_context}
 
@@ -169,6 +176,7 @@ class InstagrapiClient:
                     bloks_context,
                     code.strip(),
                     challenge="sms",
+                    should_fallback_to_sms=True,
                 )
                 logged_in = self._client.bloks_apply_login_response(result)
             elif kind == "legacy":
