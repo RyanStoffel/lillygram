@@ -264,6 +264,28 @@ def test_api_requires_token_and_has_no_dm_send_route(backend):
         ).status_code == 405
 
 
+def test_failed_verification_never_echoes_or_mislabels_the_code(backend):
+    settings, storage, _, service = backend
+    app = create_app(settings, storage=storage, service=service)
+    submitted_code = "00000000"
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/auth/login",
+            json={
+                "username": "alice",
+                "password": "incorrect",
+                "verification_code": submitted_code,
+            },
+        )
+
+    assert response.status_code == 401
+    message = response.json()["error"]["message"]
+    assert "rejected the sign-in" in message
+    assert "unused backup code" in message
+    assert submitted_code not in response.text
+
+
 def test_instagrapi_boundary_paginates_and_filters_reels():
     class RawClient:
         search_count = None

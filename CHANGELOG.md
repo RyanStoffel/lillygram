@@ -4,6 +4,16 @@ All notable changes to this project are documented here. Releases use the Xcode
 `MARKETING_VERSION`; CI assigns TestFlight build numbers from the released
 commit count and workflow attempt.
 
+## [0.5.2] - 2026-08-21
+
+### Fixed
+- Verification and backup codes are now entered through a secure masked field.
+  Password, verification-code, and proxy fields are cleared immediately after
+  every submission so a failed login cannot leave secrets visible onscreen.
+- A rejected two-factor attempt no longer reports only "credentials rejected."
+  It asks the user to confirm the password and use a fresh authenticator, SMS,
+  or unused backup code without echoing the submitted value.
+
 ## [0.5.1] - 2026-08-21
 
 ### Fixed

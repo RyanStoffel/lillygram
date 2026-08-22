@@ -40,7 +40,7 @@ struct SignInView: View {
                         .autocorrectionDisabled()
                     SecureField("Password", text: $password)
                     if store.phase == .verificationRequired {
-                        TextField("Verification code", text: $verificationCode)
+                        SecureField("Verification code", text: $verificationCode)
                             .keyboardType(.numberPad)
                             .textContentType(.oneTimeCode)
                     }
@@ -74,6 +74,9 @@ struct SignInView: View {
                                 verificationCode: verificationCode,
                                 proxyURL: proxyURL
                             )
+                            password = ""
+                            verificationCode = ""
+                            proxyURL = ""
                         }
                     } label: {
                         HStack {

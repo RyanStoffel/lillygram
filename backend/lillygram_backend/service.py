@@ -154,6 +154,11 @@ class AccountService:
                     "Instagram rejected this session. Sign in again manually.",
                 )
             except InstagramRejected as error:
+                if request.verification_code:
+                    raise Unauthorized(
+                        "Instagram rejected the sign-in. Confirm the password and "
+                        "use a fresh authenticator, SMS, or unused backup code."
+                    ) from error
                 raise Unauthorized("Instagram rejected the credentials") from error
             else:
                 await asyncio.to_thread(

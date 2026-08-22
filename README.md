@@ -4,7 +4,7 @@ A fully native SwiftUI Instagram client focused on deliberate social use:
 favorites-only Home, Stories, posts, account search, profiles, and read-only DMs,
 with no Reel feed or Explore surface.
 
-Current version: **0.5.1**. Private beta; distributed through TestFlight to a
+Current version: **0.5.2**. Private beta; distributed through TestFlight to a
 small tester group.
 
 ## Product rules

@@ -56,6 +56,9 @@ The backend classifies only the verification method and never stores the
 two-factor response. Lillygram cannot send, retrieve, or resend a code. Other
 challenges freeze that account and direct the user to Instagram; there are no
 automatic challenge loops or retries.
+Verification and backup codes are masked in the native form and cleared after
+every submission. Treat any code shown in a screenshot, log, or chat as
+compromised and regenerate Instagram's backup-code set before retrying.
 
 ## 7. TestFlight review/distribution risk
 
