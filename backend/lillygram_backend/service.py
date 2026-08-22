@@ -34,6 +34,23 @@ from .storage import AccountRecord, AccountStorage
 T = TypeVar("T")
 
 
+def _verification_message(error: InstagramVerificationRequired) -> str:
+    if error.method == "totp":
+        return (
+            "Enter the current 6-digit code from your authenticator app. "
+            "Instagram will not send an SMS for this method."
+        )
+    if error.method == "sms":
+        return (
+            "Enter the SMS code from Instagram. Delivery can take a moment; "
+            "Lillygram cannot retrieve or resend it."
+        )
+    return (
+        "Enter your Instagram two-factor code from your authenticator app, "
+        "SMS, or backup codes. Lillygram cannot send or retrieve the code."
+    )
+
+
 class ServiceError(RuntimeError):
     status_code = 500
     code = "service_error"
@@ -118,7 +135,7 @@ class AccountService:
                     record.id,
                     client.settings(),
                     AccountStatus.VERIFICATION_REQUIRED,
-                    "Enter the verification code Instagram sent you.",
+                    _verification_message(error),
                 )
             except InstagramChallenge as error:
                 await asyncio.to_thread(
@@ -286,7 +303,7 @@ class AccountService:
                 await self._freeze(
                     current,
                     AccountStatus.VERIFICATION_REQUIRED,
-                    "Instagram requires a verification code. Sign in again to enter it.",
+                    _verification_message(error),
                     client,
                 )
                 raise AccountUnavailable("Instagram verification is required") from error

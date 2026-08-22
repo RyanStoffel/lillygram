@@ -49,7 +49,7 @@ def create_app(
 
     app = FastAPI(
         title="Lillygram Backend",
-        version="0.5.0",
+        version="0.5.1",
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,

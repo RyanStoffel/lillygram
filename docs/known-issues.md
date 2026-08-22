@@ -51,9 +51,11 @@ profile-media, DM, and upload response shapes before broader use.
 
 **Status:** by design.
 
-Two-factor login accepts one user-entered verification code. Other challenges
-freeze that account and direct the user to Instagram. There are no automatic
-challenge loops, email/SMS scraping, or retries.
+Two-factor login accepts one user-entered authenticator, SMS, or backup code.
+The backend classifies only the verification method and never stores the
+two-factor response. Lillygram cannot send, retrieve, or resend a code. Other
+challenges freeze that account and direct the user to Instagram; there are no
+automatic challenge loops or retries.
 
 ## 7. TestFlight review/distribution risk
 

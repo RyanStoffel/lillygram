@@ -21,7 +21,9 @@ class InstagramChallenge(RuntimeError):
 
 
 class InstagramVerificationRequired(RuntimeError):
-    pass
+    def __init__(self, message: str, method: str = "unknown") -> None:
+        super().__init__(message)
+        self.method = method
 
 
 class InstagramReauthenticationRequired(RuntimeError):
@@ -223,8 +225,7 @@ class InstagrapiClient:
         except Exception as error:
             self._raise_mapped(error)
 
-    @staticmethod
-    def _raise_mapped(error: Exception) -> None:
+    def _raise_mapped(self, error: Exception) -> None:
         name = type(error).__name__
         message = str(error) or name
         if name in {
@@ -238,7 +239,12 @@ class InstagrapiClient:
             "ProxyAddressIsBlocked",
         }:
             raise InstagramChallenge(message) from error
-        if name in {"TwoFactorRequired", "ReloginAttemptExceeded"}:
+        if name == "TwoFactorRequired":
+            raise InstagramVerificationRequired(
+                message,
+                method=self._verification_method(),
+            ) from error
+        if name == "ReloginAttemptExceeded":
             raise InstagramVerificationRequired(message) from error
         if name in {"LoginRequired", "ClientLoginRequired"}:
             raise InstagramReauthenticationRequired(message) from error
@@ -251,6 +257,16 @@ class InstagrapiClient:
             raise error
         raise InstagramRejected(message) from error
 
+    def _verification_method(self) -> str:
+        login_response = getattr(self._client, "last_json", None)
+        sms_enabled = _nested_bool(login_response, "sms_two_factor_on")
+        totp_enabled = _nested_bool(login_response, "totp_two_factor_on")
+        if totp_enabled:
+            return "totp"
+        if sms_enabled:
+            return "sms"
+        return "unknown"
+
 
 def initial_device_settings(factory: InstagramClientFactory) -> dict[str, Any]:
     """Generate the per-account device identity exactly once, before login."""
@@ -261,6 +277,21 @@ def _value(value: Any, key: str, default: Any = None) -> Any:
     if isinstance(value, dict):
         return value.get(key, default)
     return getattr(value, key, default)
+
+def _nested_bool(value: Any, key: str) -> bool:
+    if isinstance(value, dict):
+        if key in value:
+            candidate = value[key]
+            if isinstance(candidate, bool):
+                return candidate
+            if isinstance(candidate, int):
+                return candidate != 0
+            if isinstance(candidate, str):
+                return candidate.strip().lower() in {"1", "true", "yes"}
+        return any(_nested_bool(child, key) for child in value.values())
+    if isinstance(value, list):
+        return any(_nested_bool(child, key) for child in value)
+    return False
 
 
 def _string(value: Any) -> str | None:

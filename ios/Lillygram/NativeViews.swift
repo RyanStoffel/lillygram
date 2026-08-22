@@ -109,7 +109,7 @@ struct SignInView: View {
 
     private var stateMessage: String {
         switch store.phase {
-        case .verificationRequired: "Instagram requires a verification code. Enter it below with your password."
+        case .verificationRequired: "Enter the current code from your authenticator app, SMS, or Instagram backup codes."
         case .challengeRequired: "Complete Instagram's verification in the official app. Lillygram has stopped all requests for this account."
         case .reauthRequired: "Instagram rejected the saved session. Lillygram did not retry automatically."
         default: "Sign in to continue."

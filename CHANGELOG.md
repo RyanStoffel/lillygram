@@ -4,6 +4,15 @@ All notable changes to this project are documented here. Releases use the Xcode
 `MARKETING_VERSION`; CI assigns TestFlight build numbers from the released
 commit count and workflow attempt.
 
+## [0.5.1] - 2026-08-21
+
+### Fixed
+- Two-factor login no longer incorrectly claims Instagram sent a code. The
+  backend now classifies Instagram's sanitized two-factor response as
+  authenticator-app or SMS verification and surfaces method-specific guidance.
+  Unknown flows point to authenticator, SMS, or backup codes without claiming
+  Lillygram can send or retrieve them.
+
 ## [0.5.0] - 2026-08-21
 
 ### Added

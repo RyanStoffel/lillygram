@@ -9,7 +9,11 @@ from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from lillygram_backend.config import Settings
-from lillygram_backend.instagram import InstagrapiClient, InstagramChallenge
+from lillygram_backend.instagram import (
+    InstagrapiClient,
+    InstagramChallenge,
+    InstagramVerificationRequired,
+)
 from lillygram_backend.main import create_app
 from lillygram_backend.models import (
     DirectMessage,
@@ -26,6 +30,7 @@ from lillygram_backend.service import (
     AccountUnavailable,
     RateLimitExceeded,
     WarmupRequired,
+    _verification_message,
 )
 from lillygram_backend.storage import AccountStorage
 
@@ -316,6 +321,39 @@ def test_instagrapi_boundary_paginates_and_filters_reels():
     assert raw.search_count == 12
     assert [item.id for item in profile_media] == ["profile-photo"]
     assert profile_cursor == "profile-next"
+
+
+@pytest.mark.parametrize(
+    ("flag", "expected_method"),
+    (("sms_two_factor_on", "sms"), ("totp_two_factor_on", "totp")),
+)
+def test_two_factor_method_is_classified_without_exposing_login_response(
+    flag: str, expected_method: str
+):
+    two_factor_error = type("TwoFactorRequired", (Exception,), {})
+
+    class RawClient:
+        last_json = {"two_factor_info": {flag: True}}
+
+        def login(self, username, password, verification_code):
+            raise two_factor_error("two-factor required")
+
+    client = object.__new__(InstagrapiClient)
+    client._client = RawClient()
+
+    with pytest.raises(InstagramVerificationRequired) as raised:
+        client.login("account", "password", None)
+
+    assert raised.value.method == expected_method
+
+
+def test_verification_copy_does_not_claim_totp_was_sent():
+    message = _verification_message(
+        InstagramVerificationRequired("required", method="totp")
+    )
+
+    assert "authenticator app" in message
+    assert "will not send an SMS" in message
 
 
 def raw_media(media_id: str, product_type: str = "feed") -> dict[str, Any]:
