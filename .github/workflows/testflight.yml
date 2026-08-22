@@ -68,16 +68,13 @@ jobs:
           echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
           echo "Deploying Lillygram $version ($build_number)"
 
-      - uses: actions/setup-node@v5
+      - uses: astral-sh/setup-uv@v6
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: tools/package-lock.json
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
 
-      - name: Run userscript release gate
-        run: |
-          npm ci --prefix tools
-          tools/check.sh
+      - name: Run backend release gate
+        run: uv run --directory backend --extra test pytest -q
 
       - name: Prepare App Store Connect credentials
         id: credentials

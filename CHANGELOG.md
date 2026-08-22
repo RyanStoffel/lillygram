@@ -4,6 +4,40 @@ All notable changes to this project are documented here. Releases use the Xcode
 `MARKETING_VERSION`; CI assigns TestFlight build numbers from the released
 commit count and workflow attempt.
 
+## [0.5.0] - 2026-08-21
+
+### Added
+- Fully native SwiftUI Home, Stories, photo/video posting, account-only Search,
+  Profile, read-only Messages, Settings, authentication states, and isolated
+  one-item playback for a Reel shared in a DM.
+- FastAPI backend wrapping `instagrapi` 2.18.16 with typed REST models,
+  Docker packaging, health endpoint, multipart uploads, and focused contract
+  tests.
+- Per-account encrypted session/device/proxy storage, hashed app tokens,
+  account-local locks and challenge states, randomized pacing, durable hourly
+  limits, three-day new-account write warm-up, and configurable stable proxies.
+
+### Changed
+- Favorites are now a local per-account allowlist over paginated timeline
+  pages. Empty or failed filtering never falls back to algorithmic content.
+- DMs are read natively, while replies hand off to Instagram. No DM write,
+  batch action, auto-reply, or mass-messaging endpoint exists.
+- CI and the TestFlight release gate now run backend safety contracts before
+  building the native app.
+
+### Removed
+- All `WKWebView`, injected JavaScript/CSS, DOM selectors, response splicing,
+  WebKit bridge/cookie/navigation recovery code, hidden feed harvesting,
+  content rules, and the Node/jsdom userscript harness.
+
+### Known limitations
+- A production HTTPS backend and any residential/mobile proxies still require
+  external deployment and provisioning.
+- Unofficial private-API access can still trigger Meta challenges or account
+  restrictions. No architecture can guarantee ban-free use.
+- Current upstream response shapes and uploads still require verification with
+  a designated test account before family accounts.
+
 ## [0.4.2] — 2026-08-11
 
 ### Fixed

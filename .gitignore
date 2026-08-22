@@ -7,13 +7,15 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 
-# tools
-tools/node_modules/
-tools/build/
 
 # Python
 __pycache__/
 *.py[cod]
+.venv/
+.pytest_cache/
+backend/.env
+backend/data/
+*.sqlite3
 
 
 # Local AI tooling

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lillygram-backend"
+version = "0.5.0"
+description = "Private per-account Instagram gateway for Lillygram"
+requires-python = ">=3.12"
+dependencies = [
+  "cryptography>=45.0,<46",
+  "fastapi>=0.116,<1",
+  "instagrapi==2.18.16",
+  "python-multipart>=0.0.20,<1",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[project.optional-dependencies]
+test = [
+  "httpx>=0.28,<1",
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.1,<2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["lillygram_backend"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

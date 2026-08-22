@@ -1,372 +1,57 @@
 import SwiftUI
 
 struct ContentView: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @StateObject private var bridge: WebBridge
-    @StateObject private var favoritesStore: FavoritesStore
-    @StateObject private var store: WebViewStore
-    @State private var selectedTab: NavTarget = .home
-    // Home is created by WebViewStore; the other tabs are preloaded on appear.
-    // This tracks which tabs SwiftUI can render with their persistent webview.
-    @State private var createdTabs: Set<NavTarget> = [.home]
-    @State private var avatarImage: UIImage?
-    @State private var showOnboarding = false
-    @State private var showFavoritesEditor = false
-    @State private var hasBeenReadyOnce = false
-    @State private var resaveRequested = false
-    @State private var didPreloadTabs = false
+    @StateObject private var favorites: FavoritesStore
+    @StateObject private var store: AppStore
 
     init() {
-        let bridge = WebBridge()
         let favorites = FavoritesStore()
-        _bridge = StateObject(wrappedValue: bridge)
-        _favoritesStore = StateObject(wrappedValue: favorites)
-        _store = StateObject(wrappedValue: WebViewStore(bridge: bridge, favorites: favorites))
+        _favorites = StateObject(wrappedValue: favorites)
+        _store = StateObject(wrappedValue: AppStore(favorites: favorites))
     }
 
     var body: some View {
-        ZStack {
-            bridge.pageBackground
-                .ignoresSafeArea()
-
-            TabView(selection: tabSelection) {
-                Tab(value: NavTarget.home) {
-                    webContent(for: .home)
-                } label: {
-                    tabIcon("nav-home")
-                        .accessibilityLabel("Home")
-                }
-                Tab(value: NavTarget.search) {
-                    webContent(for: .search)
-                } label: {
-                    tabIcon("nav-search")
-                        .accessibilityLabel("Search")
-                }
-                Tab(value: NavTarget.direct) {
-                    webContent(for: .direct)
-                } label: {
-                    tabIcon("nav-send")
-                        .accessibilityLabel("Messages")
-                }
-                Tab(value: NavTarget.profile) {
-                    webContent(for: .profile)
-                } label: {
-                    profileTabIcon
-                        .accessibilityLabel("Profile")
-                }
-            }
-            .tint(.primary)
-            .onChange(of: store.isLoggedIn) { _, _ in
-                refreshOnboarding()
-            }
-            .onChange(of: bridge.favoritesEditRequests) { _, _ in
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                showFavoritesEditor = true
-            }
-            .onChange(of: store.favoritesFeedReady) { _, ready in
-                if ready {
-                    hasBeenReadyOnce = true
-                    resaveRequested = false
-                }
-            }
-            .onAppear {
-                refreshOnboarding()
-                preloadSecondaryTabs()
-            }
-
-            GeometryReader { geometry in
-                VStack(spacing: 0) {
-                    bridge.safeAreaBackground
-                        .frame(height: geometry.safeAreaInsets.top)
-                    Spacer(minLength: 0)
-                }
-                .ignoresSafeArea(edges: .top)
-            }
-            .allowsHitTesting(false)
-        }
-        .fullScreenCover(isPresented: $showOnboarding) {
-            favoritesPicker(mode: .onboarding)
-                .interactiveDismissDisabled()
-        }
-        .sheet(isPresented: $showFavoritesEditor) {
-            favoritesPicker(mode: .editor)
-        }
-        .task(id: bridge.avatarURL) {
-            guard let url = bridge.avatarURL else { return }
-            guard let (data, _) = try? await URLSession.shared.data(from: url),
-                  let image = UIImage(data: data) else { return }
-            avatarImage = image
-        }
-        .overlay {
-            switch activeSplash {
-            case .launch:
-                LaunchSplashView()
-                    .transition(splashTransition)
-            case .resave:
-                ResaveSplashView()
-                    .transition(splashTransition)
-            case .none:
-                EmptyView()
-            }
-        }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: activeSplash)
-        .overlay {
-            if store.feedStuck && selectedTab == .home {
-                FeedErrorView(retry: { store.retryFavoritesFeed() })
-                    .transition(reduceMotion ? .identity : .opacity)
-            }
-        }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: store.feedStuck)
-    }
-
-    private enum SplashKind: Equatable { case launch, resave }
-
-    private var tabSelection: Binding<NavTarget> {
-        Binding(
-            get: { selectedTab },
-            set: { target in
-                if selectedTab != target {
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                }
-                store.setActive(target)
-                createdTabs.insert(target)
-                selectedTab = target
-            }
-        )
-    }
-
-    private var splashTransition: AnyTransition {
-        if reduceMotion { return .identity }
-        return .asymmetric(
-            insertion: .identity,
-            removal: .opacity.combined(with: .scale(scale: 0.97))
-        )
-    }
-
-    /// Which full-screen splash (if any) to show. Both cover the harvest + reload
-    /// so the user never sees the feed being assembled — they fire instantly
-    /// (identity insertion) and only fade out. The first time (feed never ready
-    /// yet) shows the branded launch splash; any later gap is only produced by
-    /// re-saving favorites, so it shows the update splash.
-    private var activeSplash: SplashKind? {
-        guard store.isLoggedIn, favoritesStore.isFilterEnabled else { return nil }
-        // Keep the native refresh spinner and current document visible first;
-        // only cover the page once the delayed rebuild actually begins.
-        if store.refreshPhase == .pullCommitted { return nil }
-        if store.refreshPhase == .rebuilding { return .launch }
-        // A just-tapped Save forces the update splash immediately, even before
-        // the feed-ready flag has flipped (it's still stale-true for a moment).
-        if resaveRequested { return .resave }
-        guard !store.favoritesFeedReady else { return nil }
-        return hasBeenReadyOnce ? .resave : .launch
-    }
-
-    private var isTabBarVisible: Bool {
-        store.isLoggedIn && bridge.isNavVisible
-    }
-
-    private func refreshOnboarding() {
-        if store.isLoggedIn && !favoritesStore.hasCompletedOnboarding {
-            showOnboarding = true
-        }
-    }
-
-    /// Creates every tab's webview immediately instead of waiting for its
-    /// first visit, so all four are already warm by the time the user
-    /// switches — using the launch splash's own dead time (already covering
-    /// the favorites harvest) to hide this instead of adding a new one.
-    /// store.webView(for:) triggers real creation regardless of whether
-    /// SwiftUI has rendered that tab's content yet; marking createdTabs
-    /// up front means webContent(for:) shows the real webview the first
-    /// time each tab is actually selected, never the loading placeholder.
-    private func preloadSecondaryTabs() {
-        guard !didPreloadTabs else { return }
-        didPreloadTabs = true
-        for target in NavTarget.allCases where target != .home {
-            _ = store.webView(for: target)
-            createdTabs.insert(target)
-        }
-    }
-
-    private func favoritesPicker(mode: FavoritesPickerView.Mode) -> some View {
-        FavoritesPickerView(
-            mode: mode,
-            favoritesStore: favoritesStore,
-            loadFollowing: { await store.fetchFollowing() },
-            search: { await store.searchProfiles(matching: $0) },
-            onCommit: { picked in
-                // Show the update splash the instant Save is tapped (only when the
-                // feed has rendered before — first-time onboarding uses the launch
-                // splash). Set before dismissing the sheet so the splash is already
-                // behind it and no feed flash shows through.
-                resaveRequested = hasBeenReadyOnce
-                favoritesStore.favorites = picked
-                favoritesStore.hasCompletedOnboarding = true
-                store.applyFavoritesSelection()
-                showOnboarding = false
-                showFavoritesEditor = false
-            },
-            onSkip: mode == .onboarding ? {
-                favoritesStore.favorites = []
-                favoritesStore.hasCompletedOnboarding = true
-                store.applyFavoritesSelection()
-                showOnboarding = false
-            } : nil
-        )
-    }
-
-    private var profileTabIcon: Image {
-        guard let avatarImage else {
-            return Image(systemName: "person.crop.circle")
-        }
-        let size = CGSize(width: 24, height: 24)
-        let rendered = UIGraphicsImageRenderer(size: size).image { _ in
-            UIBezierPath(ovalIn: CGRect(origin: .zero, size: size)).addClip()
-            avatarImage.draw(in: CGRect(origin: .zero, size: size))
-        }
-        return Image(uiImage: rendered.withRenderingMode(.alwaysOriginal))
-    }
-
-    private func tabIcon(_ name: String) -> Image {
-        guard let source = UIImage(named: name) else {
-            return Image(systemName: "questionmark")
-        }
-        let size = CGSize(width: 24, height: 24)
-        let resized = UIGraphicsImageRenderer(size: size).image { _ in
-            source.draw(in: CGRect(origin: .zero, size: size))
-        }
-        return Image(uiImage: resized.withRenderingMode(.alwaysTemplate))
-    }
-
-    private func webContent(for target: NavTarget) -> some View {
         Group {
-            if createdTabs.contains(target) {
-                WebViewContainer(webView: store.webView(for: target))
-                    .ignoresSafeArea(edges: !reduceTransparency && isTabBarVisible ? .bottom : [])
-            } else {
-                // Shown for the instant it takes to create+load the webview on
-                // this tab's first visit only; already-created tabs never see it.
-                Color(.systemBackground)
-                    .ignoresSafeArea()
-                    .overlay(ProgressView())
+            switch store.phase {
+            case .restoring:
+                LaunchView()
+            case .active:
+                MainTabView(store: store)
+            case .signedOut, .verificationRequired, .challengeRequired, .reauthRequired:
+                SignInView(store: store)
             }
         }
-        .toolbarVisibility(isTabBarVisible ? .visible : .hidden, for: .tabBar)
-        .animation(.easeInOut(duration: 0.25), value: isTabBarVisible)
-    }
-}
-
-/// Shown when the favorites feed is confirmed stuck (splice landed but Instagram
-/// never rendered) even after an automatic recovery — so the user gets a clean
-/// retry instead of a permanent spinner. No algorithmic content is shown.
-private struct FeedErrorView: View {
-    let retry: () -> Void
-
-    var body: some View {
-        ZStack {
-            Color(.systemBackground).ignoresSafeArea()
-            VStack(spacing: 16) {
-                Image(systemName: "star.slash")
-                    .font(.system(size: 44, weight: .regular))
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-                Text("Couldn't load your favorites")
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                    .accessibilityAddTraits(.isHeader)
-                Text("Instagram may have changed something. Try again in a moment.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 40)
-                Button {
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    retry()
-                } label: {
-                    Text("Retry")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 28)
-                        .padding(.vertical, 10)
-                        .background(Color.primary.opacity(0.1), in: Capsule())
-                }
-                .padding(.top, 4)
-                .accessibilityHint("Tries loading your favorites feed again")
+        .background(Color.black.ignoresSafeArea())
+        .preferredColorScheme(.dark)
+        .task {
+            if store.phase == .restoring {
+                await store.restoreSession()
             }
         }
-    }
-}
-
-/// The "from RYAN STOFFEL" attribution footer.
-private struct AttributionFooter: View {
-    var body: some View {
-        VStack(spacing: 6) {
-            Text("from")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            Text("RYAN STOFFEL")
-                .font(.system(size: 20, weight: .bold))
-                .tracking(0.5)
-                .foregroundStyle(.primary)
+        .alert("Lillygram", isPresented: Binding(
+            get: { store.errorMessage != nil && store.phase == .active },
+            set: { if !$0 { store.errorMessage = nil } }
+        )) {
+            Button("OK") { store.errorMessage = nil }
+        } message: {
+            Text(store.errorMessage ?? "Unknown error")
         }
-        .padding(.bottom, 46)
     }
 }
 
-/// The Lillygram app icon, rendered as a rounded app-icon tile.
-private struct AppIconMark: View {
-    let size: CGFloat
-    var body: some View {
-        Image("LillygramIcon")
-            .resizable()
-            .aspectRatio(contentMode: .fit)
-            .frame(width: size, height: size)
-            .clipShape(RoundedRectangle(cornerRadius: size * 0.225, style: .continuous))
-            .accessibilityHidden(true)
-    }
-}
-
-/// Branded cold-start splash: pure black, the Lillygram app icon centered, and a
-/// "from RYAN STOFFEL" footer.
-private struct LaunchSplashView: View {
+private struct LaunchView: View {
     var body: some View {
         ZStack {
-            Color(.systemBackground).ignoresSafeArea()
-
-            VStack(spacing: 22) {
-                AppIconMark(size: 84)
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 20) {
+                Image("LillygramIcon")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 84, height: 84)
+                    .clipShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
                 ProgressView()
-                    .accessibilityLabel("Loading your favorites feed")
-            }
-
-            VStack {
-                Spacer()
-                AttributionFooter()
             }
         }
-    }
-}
-
-/// Update splash shown while re-saving favorites re-harvests + reloads the feed,
-/// so the swap happens behind a clean screen. Same style as the launch splash;
-/// the icon does not animate.
-private struct ResaveSplashView: View {
-    var body: some View {
-        ZStack {
-            Color(.systemBackground).ignoresSafeArea()
-            VStack(spacing: 22) {
-                AppIconMark(size: 84)
-                Text("Updating your favorites…")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                ProgressView()
-                    .accessibilityLabel("Updating your favorites feed")
-            }
-            VStack {
-                Spacer()
-                AttributionFooter()
-            }
-        }
+        .accessibilityLabel("Opening Lillygram")
     }
 }

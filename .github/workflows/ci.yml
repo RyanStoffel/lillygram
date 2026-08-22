@@ -24,21 +24,18 @@ jobs:
       - name: Validate versions and changelog
         run: python3 tools/validate-release.py
 
-  userscript:
-    name: Injected JavaScript
+  backend:
+    name: Backend contracts
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: astral-sh/setup-uv@v6
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: tools/package-lock.json
-      - name: Install test dependencies
-        run: npm ci --prefix tools
-      - name: Run userscript harness
-        run: tools/check.sh
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Run backend tests
+        run: uv run --directory backend --extra test pytest -q
 
   ios:
     name: iOS simulator build
