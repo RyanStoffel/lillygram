@@ -14,6 +14,7 @@ from lillygram_backend.instagram import (
     InstagramChallenge,
     InstagramRejected,
     InstagramVerificationRequired,
+    _safe_reason,
 )
 from lillygram_backend.main import create_app
 from lillygram_backend.models import (
@@ -79,6 +80,14 @@ class FakeInstagramClient:
 
     def profile_media(self, username: str, cursor: str | None, amount: int):
         return [sample_media(username)], None
+
+    def send_direct_message(self, thread_id: str, text: str):
+        return DirectMessage(
+            id=f"sent-{thread_id}",
+            sender_id="viewer",
+            text=text,
+            sent_by_viewer=True,
+        )
 
     def direct_threads(self, amount: int):
         return [DirectThread(id="thread-1", title="Friend")]
@@ -287,7 +296,7 @@ async def test_new_account_warmup_blocks_writes(tmp_path):
     storage.close()
 
 
-def test_api_requires_token_and_has_no_dm_send_route(backend):
+def test_api_requires_a_bearer_token(backend):
     settings, storage, _, service = backend
     app = create_app(settings, storage=storage, service=service)
     with TestClient(app) as client:
@@ -301,11 +310,36 @@ def test_api_requires_token_and_has_no_dm_send_route(backend):
         assert client.get(
             "/v1/session", headers={"Authorization": f"Bearer {token}"}
         ).json()["username"] == "alice"
-        assert client.post(
-            "/v1/direct/threads/thread-1/messages",
-            headers={"Authorization": f"Bearer {token}"},
-            json={"text": "bulk automation is intentionally unavailable"},
-        ).status_code == 405
+
+
+@pytest.mark.asyncio
+async def test_sending_a_dm_consumes_the_write_budget(tmp_path):
+    key = Fernet.generate_key().decode()
+    settings = Settings(
+        database_path=tmp_path / "dm.sqlite3",
+        encryption_key=key,
+        allowed_origins=(),
+        write_limit_per_hour=1,
+        warmup_days=0,
+        read_delay_seconds=(0, 0),
+        write_delay_seconds=(0, 0),
+    )
+    storage = AccountStorage(settings.database_path, key, 0)
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    service = AccountService(settings, storage, FakeInstagramFactory(), sleep=no_sleep)
+    login = await service.login(LoginRequest(username="alice", password="correct horse"))
+    account = storage.get_by_id(login.account.id)
+
+    sent = await service.send_direct_message(account, "thread-1", "hello")
+    assert sent.sent_by_viewer is True
+
+    # The second send exhausts the same cap that guards posting.
+    with pytest.raises(RateLimitExceeded):
+        await service.send_direct_message(account, "thread-1", "again")
+    storage.close()
 
 
 def test_failed_verification_never_echoes_or_mislabels_the_code(backend):
@@ -496,6 +530,26 @@ def test_verification_copy_directs_users_to_the_authenticator_seed():
 
     assert "authenticator code" in message
     assert "setup key" in message
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        '{"sessionid": "abc123", "status": "fail"}',
+        "Bearer eyJzZXNzaW9uaWQiOiJzZWNyZXQifQ",
+        "x" * 200,
+    ),
+)
+def test_upstream_reason_never_leaks_response_bodies_or_tokens(message: str):
+    error = type("ClientError", (Exception,), {"message": message})()
+
+    assert _safe_reason(error) == ""
+
+
+def test_upstream_reason_keeps_short_instagram_status_strings():
+    error = type("BadPassword", (Exception,), {"message": "bad_password"})()
+
+    assert _safe_reason(error) == "bad_password"
 
 
 def raw_media(media_id: str, product_type: str = "feed") -> dict[str, Any]:

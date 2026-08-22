@@ -16,21 +16,41 @@ from .models import (
 )
 
 
-class InstagramChallenge(RuntimeError):
+class InstagramError(RuntimeError):
+    """Base error carrying a redaction-safe hint about what Instagram said.
+
+    ``upstream`` is the upstream exception class name and ``reason`` is
+    Instagram's own short status string. Neither ever contains credentials,
+    codes, seeds, or session data.
+    """
+
+    def __init__(self, message: str, upstream: str = "", reason: str = "") -> None:
+        super().__init__(message)
+        self.upstream = upstream
+        self.reason = reason
+
+
+class InstagramChallenge(InstagramError):
     pass
 
 
-class InstagramVerificationRequired(RuntimeError):
-    def __init__(self, message: str, method: str = "unknown") -> None:
-        super().__init__(message)
+class InstagramVerificationRequired(InstagramError):
+    def __init__(
+        self,
+        message: str,
+        method: str = "unknown",
+        upstream: str = "",
+        reason: str = "",
+    ) -> None:
+        super().__init__(message, upstream=upstream, reason=reason)
         self.method = method
 
 
-class InstagramReauthenticationRequired(RuntimeError):
+class InstagramReauthenticationRequired(InstagramError):
     pass
 
 
-class InstagramRejected(RuntimeError):
+class InstagramRejected(InstagramError):
     pass
 
 
@@ -47,6 +67,7 @@ class InstagramClient(Protocol):
     ) -> tuple[list[Media], str | None]: ...
     def direct_threads(self, amount: int) -> list[DirectThread]: ...
     def direct_messages(self, thread_id: str, amount: int) -> list[DirectMessage]: ...
+    def send_direct_message(self, thread_id: str, text: str) -> DirectMessage: ...
     def media(self, media_id: str, shared_reel: bool = False) -> Media: ...
     def upload_post(self, path: Path, caption: str, is_video: bool) -> Media: ...
     def upload_story(self, path: Path, is_video: bool) -> Media: ...
@@ -198,6 +219,12 @@ class InstagrapiClient:
         except Exception as error:
             self._raise_mapped(error)
 
+    def send_direct_message(self, thread_id: str, text: str) -> DirectMessage:
+        try:
+            return _message(self._client.direct_answer(thread_id, text))
+        except Exception as error:
+            self._raise_mapped(error)
+
     def media(self, media_id: str, shared_reel: bool = False) -> Media:
         try:
             converted = _media(self._client.media_info(media_id), shared_reel=shared_reel)
@@ -238,6 +265,7 @@ class InstagrapiClient:
     def _raise_mapped(self, error: Exception) -> None:
         name = type(error).__name__
         message = str(error) or name
+        reason = _safe_reason(error)
         if name in {
             "ChallengeRequired",
             "ChallengeUnknownStep",
@@ -248,24 +276,25 @@ class InstagrapiClient:
             "RateLimitError",
             "ProxyAddressIsBlocked",
         }:
-            raise InstagramChallenge(message) from error
+            raise InstagramChallenge(message, upstream=name, reason=reason) from error
         if name == "TwoFactorRequired":
             raise InstagramVerificationRequired(
                 message,
                 method=self._verification_method(),
+                upstream=name,
+                reason=reason,
             ) from error
         if name == "ReloginAttemptExceeded":
-            raise InstagramVerificationRequired(message) from error
+            raise InstagramVerificationRequired(
+                message, upstream=name, reason=reason
+            ) from error
         if name in {"LoginRequired", "ClientLoginRequired"}:
-            raise InstagramReauthenticationRequired(message) from error
-        if isinstance(error, (
-            InstagramChallenge,
-            InstagramVerificationRequired,
-            InstagramReauthenticationRequired,
-            InstagramRejected,
-        )):
+            raise InstagramReauthenticationRequired(
+                message, upstream=name, reason=reason
+            ) from error
+        if isinstance(error, InstagramError):
             raise error
-        raise InstagramRejected(message) from error
+        raise InstagramRejected(message, upstream=name, reason=reason) from error
 
     def _verification_method(self) -> str:
         login_response = getattr(self._client, "last_json", None)
@@ -276,6 +305,24 @@ class InstagrapiClient:
         if sms_enabled:
             return "sms"
         return "unknown"
+
+def _safe_reason(error: Exception) -> str:
+    """Instagram's own short status string, or nothing.
+
+    Only the upstream ``message`` field is used, and only when it is short and
+    free of separators, so response bodies, tokens, and session data can never
+    reach a log line.
+    """
+    candidate = getattr(error, "message", None)
+    if not isinstance(candidate, str):
+        return ""
+    candidate = candidate.strip()
+    if not candidate or len(candidate) > 80:
+        return ""
+    if any(marker in candidate for marker in ("{", "}", "sessionid", "Bearer")):
+        return ""
+    return candidate
+
 
 
 def initial_device_settings(factory: InstagramClientFactory) -> dict[str, Any]:
@@ -430,6 +477,7 @@ def _message(message: Any) -> DirectMessage:
         text=_string(_value(message, "text")) or "",
         timestamp=_datetime(_value(message, "timestamp")),
         media=_media(raw_media, shared_reel=shared_reel),
+        sent_by_viewer=bool(_value(message, "is_sent_by_viewer", False)),
     )
 
 

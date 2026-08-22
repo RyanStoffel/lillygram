@@ -119,6 +119,15 @@ actor APIClient {
         try await request(path: "v1/profiles/\(username.pathComponentEncoded)")
     }
 
+    func sendDirectMessage(threadID: String, text: String) async throws -> DirectMessage {
+        struct Body: Encodable { let text: String }
+        return try await request(
+            path: "v1/direct/threads/\(threadID.pathComponentEncoded)/messages",
+            method: "POST",
+            body: Body(text: text)
+        )
+    }
+
     func profileMedia(username: String, cursor: String?) async throws -> Page<InstagramMedia> {
         try await request(
             path: "v1/profiles/\(username.pathComponentEncoded)/media",

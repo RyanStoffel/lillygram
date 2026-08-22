@@ -1,10 +1,10 @@
 # Lillygram
 
 A fully native SwiftUI Instagram client focused on deliberate social use:
-favorites-only Home, Stories, posts, account search, profiles, and read-only DMs,
+favorites-only Home, Stories, posts, account search, profiles, and direct messages,
 with no Reel feed or Explore surface.
 
-Current version: **0.7.0**. Private beta; distributed through TestFlight to a
+Current version: **0.8.0**. Private beta; distributed through TestFlight to a
 small tester group.
 
 ## Product rules
@@ -37,8 +37,8 @@ imports `instagrapi` or communicates with Instagram's unofficial private API.
   at rest; the backend derives each login code locally.
 - New accounts are read-only for three days by default. Reads, writes, and login
   attempts have conservative rolling hourly limits and randomized pacing.
-- DMs are read-only. Replies open Instagram instead of using unofficial DM
-  writes.
+- DMs send one message per explicit tap. Sending consumes the same per-account
+  write budget as posting; there is no auto-reply, batching, or mass messaging.
 
 These controls reduce unnecessary automation but cannot guarantee that Meta will
 not challenge or restrict an account. Read [`docs/known-issues.md`](docs/known-issues.md)

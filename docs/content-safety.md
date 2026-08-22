@@ -23,9 +23,11 @@ change.
 
 ## DMs
 
-DM reads are available. There is no DM write endpoint. The native thread footer
-hands the user to Instagram for replies. This prevents Lillygram from becoming a
-message-automation client.
+Threads and messages render natively, and one message can be sent per explicit
+tap through `POST /v1/direct/threads/{id}/messages`. Sending is metered as a
+write, so the hourly cap and new-account warm-up both apply, and a failure never
+retries on its own. There is no auto-reply, scheduled send, batch send, or
+mass-messaging path.
 
 ## Writes
 

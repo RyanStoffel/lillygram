@@ -28,14 +28,15 @@ reapplies it. Lillygram does not purchase, validate, rotate, or health-check
 residential/mobile proxies. Automatic rotation would violate the stable-identity
 model.
 
-## 4. DMs are read-only
+## 4. DM sending is deliberately minimal
 
-**Status:** intentional v0.5 safety boundary.
+**Status:** implemented in 0.8.0 with narrow limits.
 
-Threads and messages render natively. Replies hand off to Instagram. The backend
-has no DM-send endpoint because unofficial DM writes are the highest-risk and
-least mature requested surface. Revisit only with real-account evidence and a
-narrow manual-send contract.
+Threads and messages render natively and a single message can be sent per explicit
+tap. Sending is metered as a write, so the per-account hourly cap and the
+new-account warm-up both apply. There is no auto-reply, scheduled send, batching,
+or mass messaging, and a failed send never retries automatically. DM writes remain
+the least mature surface in unofficial API libraries, so keep volume low.
 
 ## 5. Live Instagram response validation remains required
 

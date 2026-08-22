@@ -214,6 +214,13 @@ final class AppStore: ObservableObject {
         try await client().directMessages(threadID: threadID)
     }
 
+    /// Sends one message. Counts against the backend's per-account write budget.
+    func sendMessage(threadID: String, text: String) async throws -> DirectMessage {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw APIClientError.invalidResponse }
+        return try await client().sendDirectMessage(threadID: threadID, text: trimmed)
+    }
+
     func uploadPost(_ upload: PendingUpload) async -> Bool {
         guard !isUploading else { return false }
         isUploading = true

@@ -14,6 +14,7 @@ from .models import (
     Account,
     AppSettings,
     DirectMessage,
+    DirectMessageRequest,
     DirectThread,
     LoginRequest,
     LoginResponse,
@@ -50,7 +51,7 @@ def create_app(
 
     app = FastAPI(
         title="Lillygram Backend",
-        version="0.7.0",
+        version="0.8.0",
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
@@ -172,6 +173,19 @@ def create_app(
         limit: int = Query(default=30, ge=1, le=50),
     ) -> list[DirectMessage]:
         return await account_service.direct_messages(account, thread_id, limit)
+
+    @app.post(
+        "/v1/direct/threads/{thread_id}/messages",
+        response_model=DirectMessage,
+    )
+    async def send_direct_message(
+        thread_id: str,
+        request: DirectMessageRequest,
+        account: Annotated[AccountRecord, Depends(current_account)],
+    ) -> DirectMessage:
+        return await account_service.send_direct_message(
+            account, thread_id, request.text
+        )
 
     @app.get("/v1/media/{media_id}", response_model=Media)
     async def media(

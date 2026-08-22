@@ -14,14 +14,14 @@ struct ContentView: View {
         Group {
             switch store.phase {
             case .restoring:
-                LaunchView()
+                LaunchScreen()
             case .active:
                 MainTabView(store: store)
             case .signedOut, .verificationRequired, .challengeRequired, .reauthRequired:
-                SignInView(store: store)
+                SignInScreen(store: store)
             }
         }
-        .background(Color.black.ignoresSafeArea())
+        .background(Theme.background.ignoresSafeArea())
         .preferredColorScheme(.dark)
         .task {
             if store.phase == .restoring {
@@ -36,22 +36,5 @@ struct ContentView: View {
         } message: {
             Text(store.errorMessage ?? "Unknown error")
         }
-    }
-}
-
-private struct LaunchView: View {
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            VStack(spacing: 20) {
-                Image("LillygramIcon")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 84, height: 84)
-                    .clipShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
-                ProgressView()
-            }
-        }
-        .accessibilityLabel("Opening Lillygram")
     }
 }

@@ -45,6 +45,10 @@ class TOTPSeedRequest(BaseModel):
     seed: str | None = Field(default=None, min_length=16, max_length=128)
 
 
+class DirectMessageRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
+
+
 class ProxySettings(BaseModel):
     proxy_url: str | None = Field(default=None, max_length=512)
 
@@ -107,6 +111,7 @@ class DirectMessage(BaseModel):
     id: str
     sender_id: str
     text: str = ""
+    sent_by_viewer: bool = False
     timestamp: datetime | None = None
     media: Media | None = None
 

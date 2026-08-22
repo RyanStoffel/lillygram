@@ -93,6 +93,7 @@ struct DirectMessage: Codable, Identifiable {
     let id: String
     let senderId: String
     let text: String
+    let sentByViewer: Bool
     let timestamp: Date?
     let media: InstagramMedia?
 }

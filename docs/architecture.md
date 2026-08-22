@@ -31,7 +31,11 @@ All source files live under `ios/Lillygram/`.
 | `Models.swift` | Codable REST contract models. |
 | `APIClient.swift` | HTTPS requests, multipart uploads, ISO-8601 decoding, backend URL validation, and Keychain app-token storage. |
 | `AppStore.swift` | Main-actor session and feature state; paginated feed, stories, messages, uploads, account state, and final content filtering. |
-| `NativeViews.swift` | Native Home, Stories, Search, Messages, Profile, Settings, favorites picker, upload composers, and isolated Reel player. |
+| `Theme.swift` | Instagram-matched design tokens (colour, type, metrics) plus shared `Avatar`, `RemoteImage`, `PrimaryButtonStyle`, and `.fieldBackground()`. Every surface reads from here. |
+| `AppShell.swift` | Hand-built flat four-tab bar, sign-in screen, launch screen. `TabView` is deliberately avoided: on iOS 26 it renders a floating glass capsule, not Instagram's flat bar. |
+| `FeedScreen.swift` | Home feed, stories tray, story viewer, upload composer, favorites picker. |
+| `MessagesScreen.swift` | Direct inbox, thread with chat bubbles, composer, isolated shared-Reel player. |
+| `ProfileScreen.swift` | Profile header and 3-column grid, account-only search, settings. |
 | `FavoritesStore.swift` | Per-account, `UserDefaults`-backed selected-account list. |
 | `OnboardingView.swift` | Native bug reporter retained from the old app. |
 
@@ -41,9 +45,8 @@ held only in the active SwiftUI sign-in form and sent once to the configured
 backend. They are not written to Keychain, `UserDefaults`, logs, or backend
 storage.
 
-The backend address is user-configurable. Production devices require HTTPS.
-Plain HTTP is accepted only for `localhost` and `127.0.0.1` to support simulator
-development.
+Every surface reads colour, type, and metrics from `Theme.swift`. Do not
+hard-code hex values or font sizes in a surface file; add or reuse a token.
 
 ## Backend
 
@@ -104,7 +107,7 @@ accounts.
   their native surface is opened.
 - Posting and story upload are single, user-initiated operations. No batch or
   scheduled write endpoint exists.
-- DMs are read-only in Lillygram. Replying explicitly hands off to Instagram.
+- DM sending is one message per explicit tap, metered as a write like posting.
 - Proxy configuration is stored encrypted per account and reapplied to every
   fresh client. Proxy provisioning is outside this repository.
 
@@ -134,7 +137,9 @@ and paginated non-Reel media.
 
 ### DMs and shared Reels
 
-Threads and messages are fetched read-only. A media item is allowed into
+Threads and messages are fetched a page at a time. Sending goes through
+`POST /v1/direct/threads/{id}/messages`, one message per request, counted against
+the account's write budget and warm-up. A media item is allowed into
 `SharedReelPlayer` only when the backend marks it as a Reel extracted from a DM
 share. The player contains one `AVPlayer`, a Done action, and no next item,
 recommendation, autoplay chain, or Reel navigation surface.
@@ -155,7 +160,8 @@ recommendation, autoplay chain, or Reel navigation surface.
 - `GET /v1/profiles/{username}/media?cursor=`
 - `GET /v1/direct/threads`
 - `GET /v1/direct/threads/{id}/messages`
+- `POST /v1/direct/threads/{id}/messages`
 - `GET /v1/media/{id}?shared_reel=true`
 
-There is deliberately no DM-send, bulk action, auto-reply, batch upload, or Reel
-feed endpoint.
+There is deliberately no bulk action, auto-reply, batch upload, or Reel feed
+endpoint.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -11,6 +12,7 @@ from .instagram import (
     InstagramChallenge,
     InstagramClient,
     InstagramClientFactory,
+    InstagramError,
     InstagramReauthenticationRequired,
     InstagramRejected,
     InstagramVerificationRequired,
@@ -33,6 +35,18 @@ from .models import (
 from .storage import AccountRecord, AccountStorage
 
 T = TypeVar("T")
+_logger = logging.getLogger("lillygram.auth")
+
+
+def _log_upstream(stage: str, error: InstagramError) -> None:
+    """Record why Instagram refused, without touching secrets."""
+    _logger.warning(
+        "%s refused: upstream=%s reason=%s",
+        stage,
+        error.upstream or type(error).__name__,
+        error.reason or "<none>",
+    )
+
 
 
 def _verification_message(error: InstagramVerificationRequired) -> str:
@@ -137,6 +151,7 @@ class AccountService:
                     verification_code,
                 )
             except InstagramVerificationRequired as error:
+                _log_upstream("login", error)
                 await asyncio.to_thread(
                     self.storage.save_verification,
                     record.id,
@@ -145,6 +160,7 @@ class AccountService:
                     _verification_message(error),
                 )
             except InstagramChallenge as error:
+                _log_upstream("login", error)
                 await asyncio.to_thread(
                     self.storage.save_session,
                     record.id,
@@ -153,6 +169,7 @@ class AccountService:
                     "Instagram requires verification. Complete it in the official app, then reconnect Lillygram.",
                 )
             except InstagramReauthenticationRequired as error:
+                _log_upstream("login", error)
                 await asyncio.to_thread(
                     self.storage.save_session,
                     record.id,
@@ -161,6 +178,7 @@ class AccountService:
                     "Instagram rejected this session. Sign in again manually.",
                 )
             except InstagramRejected as error:
+                _log_upstream("login", error)
                 if record.totp_seed and not request.verification_code:
                     raise Unauthorized(
                         "Instagram rejected the generated authenticator code. "
@@ -277,6 +295,16 @@ class AccountService:
             record,
             "read",
             lambda client: client.direct_messages(thread_id, amount),
+        )
+
+    async def send_direct_message(
+        self, record: AccountRecord, thread_id: str, text: str
+    ) -> DirectMessage:
+        """Sending counts as a write: warm-up and hourly caps both apply."""
+        return await self._operate(
+            record,
+            "write",
+            lambda client: client.send_direct_message(thread_id, text),
         )
 
     async def media(

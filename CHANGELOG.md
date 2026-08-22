@@ -4,6 +4,26 @@ All notable changes to this project are documented here. Releases use the Xcode
 `MARKETING_VERSION`; CI assigns TestFlight build numbers from the released
 commit count and workflow attempt.
 
+## [0.8.0] - 2026-08-21
+
+### Added
+- Direct message sending. One message per explicit tap through
+  `POST /v1/direct/threads/{id}/messages`, metered as a write so the per-account
+  hourly cap and new-account warm-up both apply. No auto-reply, batching, or
+  scheduled send, and a failed send keeps the typed text instead of retrying.
+- `sent_by_viewer` on direct messages, so chat bubbles align by author.
+
+### Changed
+- Complete UI overhaul matched to Instagram's iOS dark appearance: serif wordmark
+  header, gradient-ringed stories tray, edge-to-edge feed posts with the standard
+  action row, tap-to-advance story viewer, chat bubbles with a pinned composer,
+  profile stats over a tight three-column grid, and capsule search fields.
+- New `Theme.swift` holds every colour, font, and metric; surfaces no longer
+  hard-code styling. `NativeViews.swift` was split into `AppShell`, `FeedScreen`,
+  `MessagesScreen`, and `ProfileScreen`.
+- The bottom bar is hand-built rather than `TabView`, which on iOS 26 renders a
+  floating glass capsule instead of Instagram's flat edge-to-edge bar.
+
 ## [0.7.0] - 2026-08-21
 
 ### Added
