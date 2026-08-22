@@ -9,6 +9,7 @@ struct SignInView: View {
     @State private var username = ""
     @State private var password = ""
     @State private var verificationCode = ""
+    @State private var totpSeed = ""
     @State private var proxyURL = ""
     @State private var showAdvanced = false
 
@@ -38,46 +39,41 @@ struct SignInView: View {
                     TextField("Username", text: $username)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    if !smsPending {
-                        SecureField("Password", text: $password)
-                    }
-                    if store.phase == .verificationRequired {
+                    SecureField("Password", text: $password)
+                    if store.phase == .verificationRequired && !totpConfigured {
                         SecureField(
-                            smsPending ? "SMS code" : "Authenticator or backup code",
+                            "Authenticator or backup code",
                             text: $verificationCode
                         )
                         .keyboardType(.numberPad)
                         .textContentType(.oneTimeCode)
-
-                        if !smsPending {
-                            Button("Request One SMS Code") {
-                                Task {
-                                    _ = await store.requestSMS(password: password)
-                                    password = ""
-                                }
-                            }
-                            .disabled(password.isEmpty || store.isSigningIn)
-                        } else {
-                            SecureField(
-                                "Password after Instagram approval",
-                                text: $password
-                            )
-                            Button("I Approved in Instagram") {
-                                Task {
-                                    _ = await store.checkAppApproval(
-                                        password: password
-                                    )
-                                    password = ""
-                                }
-                            }
-                            .disabled(password.isEmpty || store.isSigningIn)
-                            Text(
-                                "Use this only after approving the login request in the official Instagram app."
-                            )
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        }
                     }
+                }
+
+                Section {
+                    if totpConfigured {
+                        LabeledContent("Authenticator", value: "Saved")
+                        Button("Remove Setup Key", role: .destructive) {
+                            Task { _ = await store.saveTOTPSeed(nil) }
+                        }
+                        .disabled(store.isSigningIn)
+                    } else {
+                        SecureField("Authenticator setup key", text: $totpSeed)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        Button("Save Setup Key") {
+                            Task {
+                                if await store.saveTOTPSeed(totpSeed) {
+                                    totpSeed = ""
+                                }
+                            }
+                        }
+                        .disabled(totpSeed.isEmpty || store.isSigningIn)
+                    }
+                } header: {
+                    Text("Two-Factor")
+                } footer: {
+                    Text("Instagram: Accounts Center, Password and security, Two-factor authentication, Authentication app. Save that setup key once and Lillygram generates codes itself.")
                 }
 
                 Section {
@@ -101,17 +97,13 @@ struct SignInView: View {
                 Section {
                     Button {
                         Task {
-                            if smsPending {
-                                _ = await store.verifySMS(code: verificationCode)
-                            } else {
-                                await store.signIn(
-                                    serverURL: serverURL,
-                                    username: username,
-                                    password: password,
-                                    verificationCode: verificationCode,
-                                    proxyURL: proxyURL
-                                )
-                            }
+                            await store.signIn(
+                                serverURL: serverURL,
+                                username: username,
+                                password: password,
+                                verificationCode: verificationCode,
+                                proxyURL: proxyURL
+                            )
                             password = ""
                             verificationCode = ""
                             proxyURL = ""
@@ -140,24 +132,24 @@ struct SignInView: View {
         .preferredColorScheme(.dark)
     }
 
-    private var smsPending: Bool {
-        store.account?.smsPending == true
+    private var totpConfigured: Bool {
+        store.account?.totpConfigured == true
     }
 
     private var submitDisabled: Bool {
-        if store.isSigningIn || serverURL.isEmpty || username.isEmpty {
+        if store.isSigningIn || serverURL.isEmpty || username.isEmpty || password.isEmpty {
             return true
         }
-        if store.phase == .verificationRequired {
-            return verificationCode.isEmpty || (!smsPending && password.isEmpty)
+        if store.phase == .verificationRequired && !totpConfigured {
+            return verificationCode.isEmpty
         }
-        return password.isEmpty
+        return false
     }
 
     private var signInTitle: String {
         switch store.phase {
         case .verificationRequired:
-            smsPending ? "Verify SMS Code" : "Submit Verification Code"
+            totpConfigured ? "Sign In With Saved Key" : "Submit Verification Code"
         case .challengeRequired, .reauthRequired:
             "Reconnect Explicitly"
         default: "Sign In"

@@ -47,22 +47,27 @@ freezing, hard limits, warm-up, missing DM writes, pagination mapping, and Reel
 filtering. A designated account still must confirm current timeline, Story tray,
 profile-media, DM, and upload response shapes before broader use.
 
-## 6. Challenge resolution is deliberately manual
+## 6. Two-factor requires a stored authenticator seed
 
-**Status:** by design.
+**Status:** resolved for authenticator accounts; other challenges stay manual.
 
-Two-factor login accepts one user-entered authenticator, SMS, or backup code.
-When Instagram explicitly advertises SMS, Lillygram can select that method once
-and verify the resulting code against a minimal encrypted challenge context that
-expires after ten minutes. It cannot retrieve a code, resend while one is
-pending, or guarantee carrier delivery. Other challenges freeze that account
-and direct the user to Instagram; there are no automatic challenge loops.
-Instagram may still issue an official-app approval prompt despite SMS fallback.
-Lillygram exposes a manual completion check for that prompt, but does not poll
-or automatically repeat the login.
-Verification and backup codes are masked in the native form and cleared after
-every submission. Treat any code shown in a screenshot, log, or chat as
-compromised and regenerate Instagram's backup-code set before retrying.
+Accounts with 2FA enabled cannot authenticate from username and password alone,
+in any client library. Lillygram's supported path is Instagram's authenticator
+setup key, saved once and used to derive codes locally.
+
+Two mechanisms were tried and removed in 0.7.0:
+
+- **SMS.** Selecting SMS in the Bloks challenge never produced a message for the
+  test account. `should_fallback_to_sms` only marks SMS as available; it does not
+  send one.
+- **Device approval.** Approving in the official app authorizes that one pending
+  challenge. A fresh password login creates a new unapproved challenge, so the
+  completion check returned `TwoFactorRequired` every time.
+
+Manual code entry remains for backup codes. Other challenge types still freeze
+the account and direct the user to Instagram; there are no automatic loops.
+Codes and the seed are masked in the native form. Treat any code or seed shown in
+a screenshot, log, or chat as compromised and regenerate it.
 
 ## 7. TestFlight review/distribution risk
 

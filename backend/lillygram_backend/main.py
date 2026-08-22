@@ -22,9 +22,8 @@ from .models import (
     Profile,
     ProfileSummary,
     ProxySettings,
-    SMSRequest,
-    SMSVerification,
     StoryTray,
+    TOTPSeedRequest,
     UploadResponse,
 )
 from .service import AccountService, BadRequest, ServiceError, Unauthorized
@@ -51,7 +50,7 @@ def create_app(
 
     app = FastAPI(
         title="Lillygram Backend",
-        version="0.6.1",
+        version="0.7.0",
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
@@ -91,28 +90,12 @@ def create_app(
     async def login(request: LoginRequest) -> LoginResponse:
         return await account_service.login(request)
 
-    @app.post("/v1/auth/request-sms", response_model=Account)
-    async def request_sms(
-        request: SMSRequest,
+    @app.put("/v1/auth/totp-seed", response_model=Account)
+    async def set_totp_seed(
+        request: TOTPSeedRequest,
         account: Annotated[AccountRecord, Depends(current_account)],
     ) -> Account:
-        return await account_service.request_sms(account, request.password)
-
-    @app.post("/v1/auth/check-approval", response_model=Account)
-    async def check_approval(
-        request: SMSRequest,
-        account: Annotated[AccountRecord, Depends(current_account)],
-    ) -> Account:
-        return await account_service.check_app_approval(
-            account, request.password
-        )
-
-    @app.post("/v1/auth/verify-sms", response_model=Account)
-    async def verify_sms(
-        request: SMSVerification,
-        account: Annotated[AccountRecord, Depends(current_account)],
-    ) -> Account:
-        return await account_service.verify_sms(account, request.code)
+        return await account_service.set_totp_seed(account, request.seed)
 
     @app.get("/v1/session", response_model=Account)
     async def session(

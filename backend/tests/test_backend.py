@@ -41,37 +41,26 @@ class FakeInstagramClient:
         self,
         settings: dict[str, Any],
         challenge_users: set[str],
-        sms_requests: list[tuple[str, str]],
-        sms_verifications: list[tuple[str, dict[str, Any], str]],
+        login_calls: list[tuple[str, str, str | None]],
     ) -> None:
         self._settings = dict(settings)
         self._challenge_users = challenge_users
-        self._sms_requests = sms_requests
-        self._sms_verifications = sms_verifications
+        self._login_calls = login_calls
 
     def settings(self) -> dict[str, Any]:
         return dict(self._settings)
 
     def login(self, username: str, password: str, verification_code: str | None) -> None:
+        self._login_calls.append((username, password, verification_code))
         if password != "correct horse":
             raise InstagramRejected("bad password")
         self._settings["username"] = username
         self._settings["authorization_data"] = {"sessionid": f"session-{username}"}
 
-    def request_sms(self, username: str, password: str):
-        if password != "correct horse":
-            raise InstagramRejected("bad password")
-        self._sms_requests.append((username, password))
-        self._settings["username"] = username
-        return {"kind": "bloks", "context": "secret-sms-context"}
-
-    def verify_sms(self, username: str, context: dict[str, Any], code: str):
-        self._sms_verifications.append((username, context, code))
-        if code != "123456":
-            raise InstagramRejected("bad SMS code")
-        self._settings["authorization_data"] = {
-            "sessionid": f"session-{username}"
-        }
+    def totp_code(self, seed: str) -> str:
+        if seed != "JBSWY3DPEHPK3PXPJBSWY3DP":
+            raise InstagramRejected("bad seed")
+        return "424242"
 
     def timeline(self, cursor: str | None):
         username = self._settings.get("username", "unknown")
@@ -111,8 +100,7 @@ class FakeInstagramFactory:
     def __init__(self) -> None:
         self.generated_devices = 0
         self.challenge_users: set[str] = set()
-        self.sms_requests: list[tuple[str, str]] = []
-        self.sms_verifications: list[tuple[str, dict[str, Any], str]] = []
+        self.login_calls: list[tuple[str, str, str | None]] = []
 
     def new(self, settings=None, proxy_url=None):
         if settings is None:
@@ -121,8 +109,7 @@ class FakeInstagramFactory:
         result = FakeInstagramClient(
             settings,
             self.challenge_users,
-            self.sms_requests,
-            self.sms_verifications,
+            self.login_calls,
         )
         if proxy_url:
             result._settings["proxy"] = proxy_url
@@ -197,7 +184,7 @@ async def test_login_reuses_one_stable_device_identity(backend):
     assert b"secret" not in proxy_blob
 
 
-def test_storage_migrates_encrypted_sms_context_columns(tmp_path):
+def test_storage_migrates_existing_databases_to_totp_columns(tmp_path):
     database_path = tmp_path / "legacy.sqlite3"
     database = sqlite3.connect(database_path)
     database.execute(
@@ -226,11 +213,7 @@ def test_storage_migrates_encrypted_sms_context_columns(tmp_path):
     storage.close()
     migrated.close()
 
-    assert {
-        "verification_method",
-        "verification_blob",
-        "verification_expires_at",
-    }.issubset(columns)
+    assert {"verification_method", "totp_blob"}.issubset(columns)
 
 
 @pytest.mark.asyncio
@@ -347,7 +330,7 @@ def test_failed_verification_never_echoes_or_mislabels_the_code(backend):
     assert submitted_code not in response.text
 
 
-def test_sms_flow_is_one_shot_encrypted_and_passwordless_at_verification(backend):
+def test_stored_seed_derives_the_login_code_without_user_entry(backend):
     settings, storage, factory, service = backend
     app = create_app(settings, storage=storage, service=service)
 
@@ -356,63 +339,41 @@ def test_sms_flow_is_one_shot_encrypted_and_passwordless_at_verification(backend
             "/v1/auth/login",
             json={"username": "alice", "password": "correct horse"},
         ).json()
-        token = login["token"]
+        headers = {"Authorization": f"Bearer {login['token']}"}
         account_id = login["account"]["id"]
-        record = storage.get_by_id(account_id)
-        storage.save_verification(
-            account_id,
-            record.settings,
-            "sms",
-            "SMS is available.",
-        )
-        headers = {"Authorization": f"Bearer {token}"}
 
-        requested = client.post(
-            "/v1/auth/request-sms",
+        saved = client.put(
+            "/v1/auth/totp-seed",
             headers=headers,
-            json={"password": "correct horse"},
+            json={"seed": "JBSWY3DPEHPK3PXPJBSWY3DP"},
         )
+        factory.login_calls.clear()
+        # A second password login rotates the app token by design.
+        relogin = client.post(
+            "/v1/auth/login",
+            json={"username": "alice", "password": "correct horse"},
+        ).json()
+
         database = sqlite3.connect(storage._database_path)
-        pending_blob = database.execute(
-            "SELECT verification_blob FROM accounts WHERE id = ?",
-            (account_id,),
+        totp_blob = database.execute(
+            "SELECT totp_blob FROM accounts WHERE id = ?", (account_id,)
         ).fetchone()[0]
-        assert b"secret-sms-context" not in pending_blob
-        repeated = client.post(
-            "/v1/auth/request-sms",
-            headers=headers,
-            json={"password": "correct horse"},
-        )
-        verified = client.post(
-            "/v1/auth/verify-sms",
-            headers=headers,
-            json={"code": "123456"},
+
+        cleared = client.put(
+            "/v1/auth/totp-seed",
+            headers={"Authorization": f"Bearer {relogin['token']}"},
+            json={"seed": None},
         )
 
-    assert requested.status_code == 200
-    assert requested.json()["verification_method"] == "sms"
-    assert requested.json()["sms_pending"] is True
-    assert repeated.status_code == 409
-    assert verified.status_code == 200
-    assert verified.json()["status"] == "active"
-    assert verified.json()["sms_pending"] is False
-    assert factory.sms_requests == [("alice", "correct horse")]
-    assert factory.sms_verifications == [
-        (
-            "alice",
-            {"kind": "bloks", "context": "secret-sms-context"},
-            "123456",
-        )
-    ]
-
-    verification_blob = database.execute(
-        "SELECT verification_blob FROM accounts WHERE id = ?",
-        (account_id,),
-    ).fetchone()[0]
-    assert verification_blob is None
+    assert saved.status_code == 200
+    assert saved.json()["totp_configured"] is True
+    # The derived code is passed to Instagram without the user typing anything.
+    assert factory.login_calls == [("alice", "correct horse", "424242")]
+    assert b"JBSWY3DP" not in totp_blob
+    assert cleared.json()["totp_configured"] is False
 
 
-def test_official_app_approval_can_complete_a_pending_sms_login(backend):
+def test_invalid_seed_is_rejected_before_it_is_persisted(backend):
     settings, storage, _, service = backend
     app = create_app(settings, storage=storage, service=service)
 
@@ -421,31 +382,14 @@ def test_official_app_approval_can_complete_a_pending_sms_login(backend):
             "/v1/auth/login",
             json={"username": "alice", "password": "correct horse"},
         ).json()
-        account_id = login["account"]["id"]
-        record = storage.get_by_id(account_id)
-        storage.save_verification(
-            account_id,
-            record.settings,
-            "sms",
-            "SMS is available.",
-        )
-        headers = {"Authorization": f"Bearer {login['token']}"}
-        requested = client.post(
-            "/v1/auth/request-sms",
-            headers=headers,
-            json={"password": "correct horse"},
-        )
-        approved = client.post(
-            "/v1/auth/check-approval",
-            headers=headers,
-            json={"password": "correct horse"},
+        rejected = client.put(
+            "/v1/auth/totp-seed",
+            headers={"Authorization": f"Bearer {login['token']}"},
+            json={"seed": "not-a-valid-base32-seed"},
         )
 
-    assert requested.status_code == 200
-    assert requested.json()["sms_pending"] is True
-    assert approved.status_code == 200
-    assert approved.json()["status"] == "active"
-    assert approved.json()["sms_pending"] is False
+    assert rejected.status_code == 400
+    assert storage.get_by_id(login["account"]["id"]).totp_seed is None
 
 
 def test_instagrapi_boundary_paginates_and_filters_reels():
@@ -531,73 +475,27 @@ def test_two_factor_method_is_classified_without_exposing_login_response(
     assert raised.value.method == expected_method
 
 
-def test_instagrapi_sms_boundary_selects_and_verifies_one_context():
-    two_factor_error = type("TwoFactorRequired", (Exception,), {})
-
+def test_instagrapi_totp_boundary_derives_codes_locally():
     class RawClient:
-        last_json = {
-            "two_factor_info": {"sms_two_factor_on": True},
-            "two_step_verification_context": "bloks-context",
-        }
-        selected_methods: list[str] = []
-        verified: list[tuple[str, str, str]] = []
-        login_flow_calls = 0
+        @staticmethod
+        def totp_generate_code(seed):
+            assert seed == "JBSWY3DPEHPK3PXPJBSWY3DP"
+            return "654321"
 
-        def login(self, username, password, verification_code):
-            raise two_factor_error("two-factor required")
-
-        def bloks_two_step_verification_entrypoint(
-            self, context, should_fallback_to_sms
-        ):
-            assert context == "bloks-context"
-            assert should_fallback_to_sms is True
-
-        def bloks_two_step_verification_method_picker(
-            self, context, should_fallback_to_sms
-        ):
-            assert context == "bloks-context"
-            assert should_fallback_to_sms is True
-
-        def bloks_two_step_verification_select_method(
-            self, context, selected_method, should_fallback_to_sms
-        ):
-            assert context == "bloks-context"
-            assert should_fallback_to_sms is True
-            self.selected_methods.append(selected_method)
-
-        def bloks_two_step_verification_verify_code(
-            self, context, code, challenge, should_fallback_to_sms
-        ):
-            assert should_fallback_to_sms is True
-            self.verified.append((context, code, challenge))
-            return {"login": "response"}
-
-        def bloks_apply_login_response(self, result):
-            return result == {"login": "response"}
-
-        def login_flow(self):
-            self.login_flow_calls += 1
-
-    raw = RawClient()
     client = object.__new__(InstagrapiClient)
-    client._client = raw
+    client._client = RawClient()
 
-    context = client.request_sms("account", "password")
-    client.verify_sms("account", context, "123456")
-
-    assert context == {"kind": "bloks", "context": "bloks-context"}
-    assert raw.selected_methods == ["sms"]
-    assert raw.verified == [("bloks-context", "123456", "sms")]
-    assert raw.login_flow_calls == 1
+    # Spacing is how Instagram displays the setup key; it must be tolerated.
+    assert client.totp_code(" JBSWY3DP EHPK3PXP JBSWY3DP ") == "654321"
 
 
-def test_verification_copy_does_not_claim_totp_was_sent():
+def test_verification_copy_directs_users_to_the_authenticator_seed():
     message = _verification_message(
         InstagramVerificationRequired("required", method="totp")
     )
 
-    assert "authenticator app" in message
-    assert "will not send an SMS" in message
+    assert "authenticator code" in message
+    assert "setup key" in message
 
 
 def raw_media(media_id: str, product_type: str = "feed") -> dict[str, Any]:

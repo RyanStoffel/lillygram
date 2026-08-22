@@ -4,6 +4,26 @@ All notable changes to this project are documented here. Releases use the Xcode
 `MARKETING_VERSION`; CI assigns TestFlight build numbers from the released
 commit count and workflow attempt.
 
+## [0.7.0] - 2026-08-21
+
+### Added
+- Authenticator (TOTP) sign-in. Save Instagram's setup key once and the backend
+  derives the current 6-digit code locally on every login, with no SMS
+  delivery, device-approval prompt, or manual code entry.
+- `PUT /v1/auth/totp-seed` stores or clears the key. An invalid key is rejected
+  before it is persisted rather than at the next login.
+
+### Removed
+- `POST /v1/auth/request-sms`, `POST /v1/auth/verify-sms`, and
+  `POST /v1/auth/check-approval`, plus their native controls. SMS was never
+  delivered for the test account, and the approval check could not work by
+  design: a fresh password login creates a new unapproved challenge, so
+  approving in the official app never completed it.
+
+### Security
+- The authenticator seed is Fernet-encrypted at rest alongside session and
+  proxy data, and is never logged or returned by the API.
+
 ## [0.6.1] - 2026-08-21
 
 ### Fixed

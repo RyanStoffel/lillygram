@@ -36,19 +36,20 @@ T = TypeVar("T")
 
 
 def _verification_message(error: InstagramVerificationRequired) -> str:
+    base = (
+        "Save your Instagram authenticator setup key in Settings so Lillygram "
+        "can generate codes automatically."
+    )
     if error.method == "totp":
-        return (
-            "Enter the current 6-digit code from your authenticator app. "
-            "Instagram will not send an SMS for this method."
-        )
+        return f"Enter the current 6-digit authenticator code. {base}"
     if error.method == "sms":
         return (
-            "Enter the SMS code from Instagram. Delivery can take a moment; "
-            "Lillygram cannot retrieve or resend it."
+            "Instagram wants an SMS code, but delivery is unreliable for this "
+            f"account and Lillygram cannot resend it. {base}"
         )
     return (
-        "Enter your Instagram two-factor code from your authenticator app, "
-        "SMS, or backup codes. Lillygram cannot send or retrieve the code."
+        "Enter a current authenticator code or an unused backup code. "
+        f"{base}"
     )
 
 
@@ -123,12 +124,17 @@ class AccountService:
             await self._enforce_login_limit(record)
             await self._pace("write")
             client = self.client_factory.new(record.settings, record.proxy_url)
+            # A stored authenticator seed makes two-factor deterministic: derive
+            # the current code instead of waiting on SMS or device approval.
+            verification_code = request.verification_code
+            if not verification_code and record.totp_seed:
+                verification_code = client.totp_code(record.totp_seed)
             try:
                 await asyncio.to_thread(
                     client.login,
                     username,
                     request.password,
-                    request.verification_code,
+                    verification_code,
                 )
             except InstagramVerificationRequired as error:
                 await asyncio.to_thread(
@@ -155,10 +161,16 @@ class AccountService:
                     "Instagram rejected this session. Sign in again manually.",
                 )
             except InstagramRejected as error:
-                if request.verification_code:
+                if record.totp_seed and not request.verification_code:
+                    raise Unauthorized(
+                        "Instagram rejected the generated authenticator code. "
+                        "Confirm the password and that the stored setup key "
+                        "matches this account."
+                    ) from error
+                if verification_code:
                     raise Unauthorized(
                         "Instagram rejected the sign-in. Confirm the password and "
-                        "use a fresh authenticator, SMS, or unused backup code."
+                        "use a fresh authenticator or unused backup code."
                     ) from error
                 raise Unauthorized("Instagram rejected the credentials") from error
             else:
@@ -185,217 +197,21 @@ class AccountService:
         current = await asyncio.to_thread(self.storage.get_by_id, record.id)
         return self.storage.account_model(current)
 
-    async def request_sms(
-        self, record: AccountRecord, password: str
+    async def set_totp_seed(
+        self, record: AccountRecord, seed: str | None
     ) -> Account:
-        lock = await self._lock_for(record.id)
-        async with lock:
-            current = await asyncio.to_thread(self.storage.get_by_id, record.id)
-            if current.status != AccountStatus.VERIFICATION_REQUIRED:
-                raise AccountUnavailable(
-                    "SMS can only be requested while Instagram requires verification"
-                )
-            if (
-                current.verification_context is not None
-                and current.verification_expires_at is not None
-                and current.verification_expires_at > datetime.now(UTC)
-            ):
-                raise AccountUnavailable(
-                    "An SMS was already requested. Enter that code or wait for it to expire."
-                )
-            await self._enforce_login_limit(current)
-            await self._pace("write")
-            client = self.client_factory.new(current.settings, current.proxy_url)
+        """Store or clear the authenticator seed used to derive login codes."""
+        if seed is not None:
+            # Fail before persisting rather than at the next login attempt.
             try:
-                context = await asyncio.to_thread(
-                    client.request_sms,
-                    current.username,
-                    password,
-                )
-            except InstagramVerificationRequired as error:
-                message = _verification_message(error)
-                await asyncio.to_thread(
-                    self.storage.save_verification,
-                    current.id,
-                    client.settings(),
-                    error.method,
-                    message,
-                )
-                raise AccountUnavailable(message) from error
-            except InstagramChallenge as error:
-                await asyncio.to_thread(
-                    self.storage.save_session,
-                    current.id,
-                    client.settings(),
-                    AccountStatus.CHALLENGE_REQUIRED,
-                    "Instagram requires verification in the official app. SMS was not retried.",
-                )
-                raise AccountUnavailable(
-                    "Instagram requires verification in the official app"
-                ) from error
-            except InstagramReauthenticationRequired as error:
-                await asyncio.to_thread(
-                    self.storage.save_session,
-                    current.id,
-                    client.settings(),
-                    AccountStatus.REAUTH_REQUIRED,
-                    "Instagram rejected the session. Sign in again manually.",
-                )
-                raise AccountUnavailable("Instagram rejected the session") from error
+                self.client_factory.new().totp_code(seed)
             except InstagramRejected as error:
-                raise Unauthorized(
-                    "Instagram rejected the password while requesting SMS"
+                raise BadRequest(
+                    "That is not a valid Instagram authenticator setup key"
                 ) from error
-
-            if context is None:
-                await asyncio.to_thread(
-                    self.storage.save_session,
-                    current.id,
-                    client.settings(),
-                    AccountStatus.ACTIVE,
-                    None,
-                )
-            else:
-                await asyncio.to_thread(
-                    self.storage.save_verification,
-                    current.id,
-                    client.settings(),
-                    "sms",
-                    "Instagram was asked to send one SMS code. Enter it below; Lillygram will not request another while it is pending.",
-                    context,
-                    datetime.now(UTC) + timedelta(minutes=10),
-                )
-            updated = await asyncio.to_thread(self.storage.get_by_id, current.id)
-            return self.storage.account_model(updated)
-
-    async def check_app_approval(
-        self, record: AccountRecord, password: str
-    ) -> Account:
-        lock = await self._lock_for(record.id)
-        async with lock:
-            current = await asyncio.to_thread(self.storage.get_by_id, record.id)
-            if current.status != AccountStatus.VERIFICATION_REQUIRED:
-                raise AccountUnavailable(
-                    "App approval can only be checked while verification is pending"
-                )
-            await self._enforce_login_limit(current)
-            await self._pace("write")
-            client = self.client_factory.new(current.settings, current.proxy_url)
-            try:
-                await asyncio.to_thread(
-                    client.login,
-                    current.username,
-                    password,
-                    None,
-                )
-            except InstagramVerificationRequired as error:
-                await asyncio.to_thread(
-                    self.storage.save_verification,
-                    current.id,
-                    client.settings(),
-                    error.method,
-                    "Instagram has not approved this login yet. Approve it in the official app, then check once more.",
-                    current.verification_context,
-                    current.verification_expires_at,
-                )
-                raise AccountUnavailable(
-                    "Instagram has not approved this login yet"
-                ) from error
-            except InstagramChallenge as error:
-                await asyncio.to_thread(
-                    self.storage.save_session,
-                    current.id,
-                    client.settings(),
-                    AccountStatus.CHALLENGE_REQUIRED,
-                    "Instagram requires another verification step in the official app.",
-                )
-                raise AccountUnavailable(
-                    "Instagram requires another verification step"
-                ) from error
-            except InstagramReauthenticationRequired as error:
-                raise AccountUnavailable("Instagram rejected the session") from error
-            except InstagramRejected as error:
-                raise Unauthorized(
-                    "Instagram rejected the password while checking app approval"
-                ) from error
-
-            await asyncio.to_thread(
-                self.storage.save_session,
-                current.id,
-                client.settings(),
-                AccountStatus.ACTIVE,
-                None,
-            )
-            updated = await asyncio.to_thread(self.storage.get_by_id, current.id)
-            return self.storage.account_model(updated)
-
-    async def verify_sms(
-        self, record: AccountRecord, code: str
-    ) -> Account:
-        lock = await self._lock_for(record.id)
-        async with lock:
-            current = await asyncio.to_thread(self.storage.get_by_id, record.id)
-            if (
-                current.status != AccountStatus.VERIFICATION_REQUIRED
-                or current.verification_method != "sms"
-                or current.verification_context is None
-                or current.verification_expires_at is None
-            ):
-                raise AccountUnavailable("Request a new SMS code before verifying")
-            if current.verification_expires_at <= datetime.now(UTC):
-                await asyncio.to_thread(
-                    self.storage.save_verification,
-                    current.id,
-                    current.settings,
-                    "sms",
-                    "The SMS verification request expired. Request one new code.",
-                )
-                raise AccountUnavailable("The SMS verification request expired")
-
-            await self._enforce_login_limit(current)
-            await self._pace("write")
-            client = self.client_factory.new(current.settings, current.proxy_url)
-            try:
-                await asyncio.to_thread(
-                    client.verify_sms,
-                    current.username,
-                    current.verification_context,
-                    code,
-                )
-            except (InstagramVerificationRequired, InstagramRejected) as error:
-                raise Unauthorized(
-                    "Instagram rejected the SMS code. Confirm the newest code and try once more."
-                ) from error
-            except InstagramChallenge as error:
-                await asyncio.to_thread(
-                    self.storage.save_session,
-                    current.id,
-                    client.settings(),
-                    AccountStatus.CHALLENGE_REQUIRED,
-                    "Instagram requires verification in the official app. SMS verification stopped.",
-                )
-                raise AccountUnavailable(
-                    "Instagram requires verification in the official app"
-                ) from error
-            except InstagramReauthenticationRequired as error:
-                await asyncio.to_thread(
-                    self.storage.save_session,
-                    current.id,
-                    client.settings(),
-                    AccountStatus.REAUTH_REQUIRED,
-                    "Instagram rejected the session. Sign in again manually.",
-                )
-                raise AccountUnavailable("Instagram rejected the session") from error
-
-            await asyncio.to_thread(
-                self.storage.save_session,
-                current.id,
-                client.settings(),
-                AccountStatus.ACTIVE,
-                None,
-            )
-            updated = await asyncio.to_thread(self.storage.get_by_id, current.id)
-            return self.storage.account_model(updated)
+        await asyncio.to_thread(self.storage.save_totp_seed, record.id, seed)
+        updated = await asyncio.to_thread(self.storage.get_by_id, record.id)
+        return self.storage.account_model(updated)
 
     async def app_settings(self, record: AccountRecord) -> AppSettings:
         current = await asyncio.to_thread(self.storage.get_by_id, record.id)

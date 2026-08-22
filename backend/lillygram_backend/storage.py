@@ -27,8 +27,7 @@ class AccountRecord:
     proxy_url: str | None
     challenge_message: str | None
     verification_method: str | None
-    verification_context: dict[str, Any] | None
-    verification_expires_at: datetime | None
+    totp_seed: str | None
 
 
 class StorageError(RuntimeError):
@@ -68,8 +67,7 @@ class AccountStorage:
                     proxy_blob BLOB,
                     challenge_message TEXT,
                     verification_method TEXT,
-                    verification_blob BLOB,
-                    verification_expires_at TEXT
+                    totp_blob BLOB
                 );
                 CREATE TABLE IF NOT EXISTS request_events (
                     account_id TEXT NOT NULL,
@@ -89,13 +87,9 @@ class AccountStorage:
                 self._connection.execute(
                     "ALTER TABLE accounts ADD COLUMN verification_method TEXT"
                 )
-            if "verification_blob" not in columns:
+            if "totp_blob" not in columns:
                 self._connection.execute(
-                    "ALTER TABLE accounts ADD COLUMN verification_blob BLOB"
-                )
-            if "verification_expires_at" not in columns:
-                self._connection.execute(
-                    "ALTER TABLE accounts ADD COLUMN verification_expires_at TEXT"
+                    "ALTER TABLE accounts ADD COLUMN totp_blob BLOB"
                 )
 
     @staticmethod
@@ -191,8 +185,7 @@ class AccountStorage:
                 """
                 UPDATE accounts
                 SET settings_blob = ?, status = ?, challenge_message = ?,
-                    verification_method = NULL, verification_blob = NULL,
-                    verification_expires_at = NULL
+                    verification_method = NULL
                 WHERE id = ?
                 """,
                 (self._encrypt_json(settings), status.value, challenge_message, account_id),
@@ -204,16 +197,13 @@ class AccountStorage:
         settings: dict[str, Any],
         method: str,
         challenge_message: str,
-        context: dict[str, Any] | None = None,
-        expires_at: datetime | None = None,
     ) -> None:
         with self._lock, self._connection:
             self._connection.execute(
                 """
                 UPDATE accounts
                 SET settings_blob = ?, status = ?, challenge_message = ?,
-                    verification_method = ?, verification_blob = ?,
-                    verification_expires_at = ?
+                    verification_method = ?
                 WHERE id = ?
                 """,
                 (
@@ -221,10 +211,16 @@ class AccountStorage:
                     AccountStatus.VERIFICATION_REQUIRED.value,
                     challenge_message,
                     method,
-                    self._encrypt_json(context) if context else None,
-                    expires_at.isoformat() if expires_at else None,
                     account_id,
                 ),
+            )
+
+    def save_totp_seed(self, account_id: str, seed: str | None) -> None:
+        """Persist the long-lived authenticator seed, encrypted at rest."""
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE accounts SET totp_blob = ? WHERE id = ?",
+                (self._encrypt_text(seed), account_id),
             )
 
     def set_status(
@@ -279,11 +275,7 @@ class AccountStorage:
             challenge_message=record.challenge_message,
             proxy_configured=record.proxy_url is not None,
             verification_method=record.verification_method,
-            sms_pending=(
-                record.verification_context is not None
-                and record.verification_expires_at is not None
-                and record.verification_expires_at > datetime.now(UTC)
-            ),
+            totp_configured=record.totp_seed is not None,
         )
 
     def close(self) -> None:
@@ -294,11 +286,7 @@ class AccountStorage:
         try:
             settings = self._decrypt_json(row["settings_blob"])
             proxy_url = self._decrypt_text(row["proxy_blob"])
-            verification_context = (
-                self._decrypt_json(row["verification_blob"])
-                if row["verification_blob"]
-                else None
-            )
+            totp_seed = self._decrypt_text(row["totp_blob"])
         except InvalidToken as error:
             raise StorageError(
                 "Encrypted account data cannot be read with the configured key"
@@ -313,12 +301,7 @@ class AccountStorage:
             proxy_url=proxy_url,
             challenge_message=row["challenge_message"],
             verification_method=row["verification_method"],
-            verification_context=verification_context,
-            verification_expires_at=(
-                datetime.fromisoformat(row["verification_expires_at"])
-                if row["verification_expires_at"]
-                else None
-            ),
+            totp_seed=totp_seed,
         )
 
     def _encrypt_json(self, value: dict[str, Any]) -> bytes:

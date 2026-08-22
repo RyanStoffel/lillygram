@@ -76,16 +76,14 @@ stored sessions intentionally unreadable.
 6. `ChallengeRequired`, two-factor-required, `LoginRequired`, rate blocks, and
    related trust failures freeze only that account. The client presents the
    explicit verification or reconnect state.
-7. When Instagram explicitly offers SMS, the user may request it once. The
-   backend selects SMS in the current two-factor challenge and stores only the
-   minimal challenge identifier/context, Fernet-encrypted with a ten-minute
-   expiry. The password is never persisted.
-8. `/v1/auth/verify-sms` consumes that pending context and the user-entered code
-   without repeating password login. A second SMS request is rejected while the
-   first context remains valid.
-9. If Instagram still presents device approval, the user may approve it in the
-   official app and explicitly check once with their password. A still-pending
-   result preserves the encrypted SMS context instead of silently replacing it.
+7. Two-factor accounts store Instagram's authenticator setup key once, encrypted
+   at rest. Every later login derives the current code locally with
+   `totp_generate_code`, so no SMS delivery or device-approval prompt is
+   involved. Passwords and derived codes are never persisted.
+
+SMS request and device-approval endpoints were removed in 0.7.0. SMS was never
+delivered for the test account, and re-running a password login cannot complete
+an approval: each login POST creates a new, unapproved challenge.
 
 A fresh `instagrapi.Client` is constructed from one account's encrypted settings
 inside that account's `asyncio.Lock` for every operation. No live client,
@@ -144,9 +142,7 @@ recommendation, autoplay chain, or Reel navigation surface.
 ## REST surface
 
 - `POST /v1/auth/login`
-- `POST /v1/auth/request-sms`
-- `POST /v1/auth/verify-sms`
-- `POST /v1/auth/check-approval`
+- `PUT /v1/auth/totp-seed`
 - `GET /v1/session`
 - `GET /v1/settings`
 - `PUT /v1/settings/proxy`

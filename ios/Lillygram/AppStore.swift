@@ -90,45 +90,15 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func requestSMS(password: String) async -> Bool {
+    func saveTOTPSeed(_ seed: String?) async -> Bool {
         guard !isSigningIn else { return false }
         isSigningIn = true
         errorMessage = nil
         defer { isSigningIn = false }
         do {
-            let updated = try await client().requestSMS(password: password)
+            let updated = try await client().setTOTPSeed(seed)
             applyAccount(updated)
-            return updated.smsPending || updated.status == .active
-        } catch {
-            await handleOperationError(error)
-            return false
-        }
-    }
-
-    func checkAppApproval(password: String) async -> Bool {
-        guard !isSigningIn else { return false }
-        isSigningIn = true
-        errorMessage = nil
-        defer { isSigningIn = false }
-        do {
-            let updated = try await client().checkAppApproval(password: password)
-            applyAccount(updated)
-            return updated.status == .active
-        } catch {
-            await handleOperationError(error)
-            return false
-        }
-    }
-
-    func verifySMS(code: String) async -> Bool {
-        guard !isSigningIn else { return false }
-        isSigningIn = true
-        errorMessage = nil
-        defer { isSigningIn = false }
-        do {
-            let updated = try await client().verifySMS(code: code)
-            applyAccount(updated)
-            return updated.status == .active
+            return true
         } catch {
             await handleOperationError(error)
             return false

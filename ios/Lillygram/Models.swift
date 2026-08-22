@@ -16,7 +16,7 @@ struct Account: Codable, Identifiable, Equatable {
     let challengeMessage: String?
     let proxyConfigured: Bool
     let verificationMethod: String?
-    let smsPending: Bool
+    let totpConfigured: Bool
 }
 
 struct LoginResponse: Codable {
